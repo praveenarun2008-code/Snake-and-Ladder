@@ -1,0 +1,115 @@
+import React, { useEffect } from "react";
+
+function App() {
+  useEffect(() => {
+    import("../script.js");
+  }, []);
+
+  return (
+    <>
+      <div className="app">
+        <header className="topbar">
+          <div className="brand">
+            <span className="brand-tag">Classic Board Game</span>
+            <h1>Snake &amp; Ladder</h1>
+            <p className="brand-sub">Race to 100, climb the ladders, dodge the snakes.</p>
+          </div>
+          <div className="score-strip">
+            <div className="score-card">
+              <span id="p1-label" className="label">Player 1</span>
+              <span className="value" id="p1-score">01</span>
+            </div>
+            <div className="score-card">
+              <span id="p2-label" className="label">Player 2</span>
+              <span className="value" id="p2-score">01</span>
+            </div>
+          </div>
+        </header>
+
+        <div className="board-row">
+          <aside className="side-panel side-panel-left">
+            <div className="online-panel">
+              <div className="panel-title">Online Multiplayer</div>
+              <p id="multiplayer-status" className="meta-line">Local mode. Play on one device or connect a friend online.</p>
+              <label className="field-label" htmlFor="player-name">Your name</label>
+              <input id="player-name" className="control-input" type="text" maxLength="18" placeholder="Enter your name" />
+              <div className="online-actions">
+                <button id="local-mode-btn" className="secondary-btn" type="button">Local Mode</button>
+                <button id="create-room-btn" className="primary-btn" type="button">Create Room</button>
+              </div>
+              <label className="field-label" htmlFor="room-code-input">Room code</label>
+              <div className="online-join-row">
+                <input id="room-code-input" className="control-input" type="text" maxLength="6" placeholder="Enter code" />
+                <button id="join-room-btn" className="secondary-btn" type="button">Join</button>
+              </div>
+              <p id="room-code-display" className="meta-line meta-strong">Room: -</p>
+              <button id="leave-room-btn" className="ghost-btn" type="button" disabled>Leave Room</button>
+            </div>
+          </aside>
+
+          <div className="board-wrap">
+            <div className="board-glow"></div>
+            <div id="board"></div>
+            <svg id="overlay" viewBox="0 0 600 600" preserveAspectRatio="none"></svg>
+            <div id="player-layer"></div>
+          </div>
+
+          <aside className="side-panel side-panel-right">
+            <div className="dice-panel">
+              <div className="panel-title">Dice</div>
+              <div id="dice-face" className="dice face-1" aria-label="Dice">
+                <span className="pip"></span><span className="pip"></span><span className="pip"></span>
+                <span className="pip"></span><span className="pip"></span><span className="pip"></span>
+                <span className="pip"></span><span className="pip"></span><span className="pip"></span>
+              </div>
+              <p id="dice" className="meta-line">Dice: -</p>
+              <p id="dice-owner" className="meta-line meta-strong">Active: Player 1</p>
+            </div>
+
+            <div className="controls">
+              <div id="player-roll-1" className="player-roll-group player-roll-1 active">
+                <div className="player-roll-head">
+                  <span id="player-roll-name-1" className="player-roll-name">Player 1</span>
+                  <span id="turn-state-1" className="turn-state">Your turn</span>
+                </div>
+                <button id="roll-btn-1" className="primary-btn player-btn player-1-btn" type="button">Roll for Player 1</button>
+                <p id="p1-last-roll" className="meta-line">Last roll: -</p>
+              </div>
+
+              <div id="player-roll-2" className="player-roll-group player-roll-2">
+                <div className="player-roll-head">
+                  <span id="player-roll-name-2" className="player-roll-name">Player 2</span>
+                  <span id="turn-state-2" className="turn-state">Waiting</span>
+                </div>
+                <button id="roll-btn-2" className="primary-btn player-btn player-2-btn" type="button">Roll for Player 2</button>
+                <p id="p2-last-roll" className="meta-line">Last roll: -</p>
+              </div>
+
+              <p id="position" className="meta-line">Player Position: 1</p>
+              <div id="turn-chip" className="turn-chip">Player 1 starts. First to 100 wins.</div>
+            </div>
+          </aside>
+        </div>
+      </div>
+
+      <div id="toast-container" className="toast-container" aria-live="polite" aria-atomic="true"></div>
+      <div id="celebration-rain" className="celebration-rain" aria-hidden="true"></div>
+      <div id="confetti-corner" className="confetti-corner" aria-hidden="true"></div>
+
+      <div id="win-overlay" className="win-overlay" aria-hidden="true">
+        <div className="win-card" role="dialog" aria-live="assertive" aria-modal="true">
+          <div className="win-glow" aria-hidden="true"></div>
+          <p className="win-kicker">Victory</p>
+          <h2 id="win-message">You won!</h2>
+          <p className="win-sub">Celebrate the climb and roll again.</p>
+          <div className="win-actions">
+            <button id="win-continue" className="win-btn" type="button">Continue</button>
+            <button id="win-stop" className="win-btn secondary" type="button">Not now</button>
+          </div>
+        </div>
+      </div>
+    </>
+  );
+}
+
+export default App;
