@@ -372,6 +372,10 @@ function getRoomPlayers(){
   return multiplayerState.players || {};
 }
 
+function isPeerActive(peer){
+  return Boolean(peer && peer.open && !peer.destroyed && !peer.disconnected);
+}
+
 function createBaseGameState(){
   return {
     positions: {1: 1, 2: 1},
@@ -659,6 +663,12 @@ function claimWarmHostPeer(){
 
   const peer = warmHostState.peer;
   const roomCode = warmHostState.roomCode;
+  if(!isPeerActive(peer)){
+    cancelWarmHostPeer();
+    scheduleWarmHostPeer(120);
+    return null;
+  }
+
   warmHostState.token += 1;
   resetWarmHostState();
   return {peer, roomCode};
@@ -816,7 +826,7 @@ function handlePeerMessage(message){
     multiplayerState.pendingAction = "";
     applyOnlineGameState(message.game || createBaseGameState());
     updateMultiplayerUI();
-    showToast(`Joined room ${multiplayerState.roomCode}.`, "success");
+    showToast(`Joined room ${multiplayerState.roomCode}. Player 1 rolls first.`, "success");
     return;
   }
 
@@ -1352,6 +1362,19 @@ function updateTurnUI(){
   if(turnChip){
     if(isOnlineMode() && !isRoomReady()){
       turnChip.innerText = "Waiting for both players to join the online room.";
+    }else if(
+      isOnlineMode() &&
+      !gameOver &&
+      multiplayerState.localPlayerSlot &&
+      currentPlayer !== multiplayerState.localPlayerSlot
+    ){
+      turnChip.innerText = `${getPlayerDisplayName(currentPlayer)}'s turn. Wait for your turn to roll.`;
+    }else if(
+      isOnlineMode() &&
+      !gameOver &&
+      multiplayerState.localPlayerSlot === currentPlayer
+    ){
+      turnChip.innerText = "Your turn. Roll the dice.";
     }else if(gameOver && isOnlineMode()){
       turnChip.innerText = `${getPlayerDisplayName(currentPlayer)} won. Player 1 can start the next online game.`;
     }else if(gameOver){
@@ -2071,6 +2094,8 @@ function rollDiceForPlayer(playerId){
     if(!canPlayerAct(playerId)){
       if(!isRoomReady()){
         showToast("Wait for your friend to join the room.", "info");
+      }else if(multiplayerState.localPlayerSlot && currentPlayer !== multiplayerState.localPlayerSlot){
+        showToast(`${getPlayerDisplayName(currentPlayer)} must roll first. Wait for your turn.`, "info");
       }else{
         showToast("It is not your online turn yet.", "info");
       }
