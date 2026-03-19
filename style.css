@@ -125,6 +125,33 @@ h1{
   justify-self:center;
 }
 
+.move-indicator{
+  position:absolute;
+  left:50%;
+  top:14px;
+  transform:translate(-50%, -10px);
+  z-index:5;
+  max-width:calc(100% - 28px);
+  padding:10px 14px;
+  border-radius:999px;
+  background:rgba(11, 16, 26, 0.86);
+  border:1px solid rgba(255,255,255,0.16);
+  box-shadow:0 12px 24px rgba(0,0,0,0.28);
+  color:#f8fbff;
+  font-size:13px;
+  font-weight:800;
+  letter-spacing:0.01em;
+  text-align:center;
+  opacity:0;
+  pointer-events:none;
+  transition:opacity 0.2s ease, transform 0.2s ease;
+}
+
+.move-indicator.active{
+  opacity:1;
+  transform:translate(-50%, 0);
+}
+
 .board-glow{
   display:none;
 }
@@ -382,6 +409,11 @@ h1{
   position:relative;
   transform-origin:center;
   transition:background 0.25s ease, box-shadow 0.25s ease, transform 0.25s ease;
+}
+
+.dice.shared-dice{
+  background:linear-gradient(150deg, #fdf1cf, #f7d27b);
+  box-shadow:0 16px 24px rgba(0,0,0,0.35), 0 0 22px rgba(245,197,86,0.18), inset 0 0 0 2px rgba(255,255,255,0.8);
 }
 
 .dice::after{

@@ -1,4 +1,5 @@
 const board = document.getElementById("board");
+const boardWrap = board ? board.closest(".board-wrap") : null;
 const overlay = document.getElementById("overlay");
 const playerLayer = document.getElementById("player-layer");
 const celebrationRain = document.getElementById("celebration-rain");
@@ -43,6 +44,8 @@ const playerRollNames = {
   1: document.getElementById("player-roll-name-1"),
   2: document.getElementById("player-roll-name-2")
 };
+let moveIndicator = null;
+let moveIndicatorTimerId = null;
 
 const audioState = {
   ctx: null,
@@ -762,10 +765,88 @@ function applyOnlineGameState(game){
   updatePlayers();
 }
 
+async function animateOnlineGameState(game){
+  if(!game){
+    return;
+  }
+
+  if(!game.action){
+    hideMoveIndicator();
+    applyOnlineGameState(game);
+    updateMultiplayerUI();
+    return;
+  }
+
+  const actorId = Number(game.action.playerId) || 1;
+  const actorName = getPlayerDisplayName(actorId);
+  const startPos = Number(game.action.start) || positions[actorId] || 1;
+  const endPos = Number(game.action.end) || startPos;
+  const finalPos = Number(game.action.finalPos) || endPos;
+  const diceValue = Number(game.action.dice) || Number(game.diceValue) || 1;
+
+  positions = {
+    ...positions,
+    [actorId]: startPos
+  };
+  currentPlayer = actorId;
+  gameOver = false;
+  isRolling = true;
+  hideWinCelebration();
+  playSound("roll");
+
+  if(diceText){
+    diceText.innerText = `${actorName}: rolling...`;
+  }
+  diceFace.classList.add("rolling");
+  updatePlayers();
+  updateMultiplayerUI();
+
+  const previewCount = 3;
+  const previewDelay = 220;
+  for(let i = 0; i < previewCount; i++){
+    setDiceFace(Math.floor(Math.random() * 6) + 1);
+    await sleep(previewDelay);
+  }
+
+  diceFace.classList.remove("rolling");
+  setDiceFace(diceValue);
+  playSound("land");
+  lastRolls = {
+    1: game.lastRolls && typeof game.lastRolls[1] === "number" ? game.lastRolls[1] : lastRolls[1],
+    2: game.lastRolls && typeof game.lastRolls[2] === "number" ? game.lastRolls[2] : lastRolls[2]
+  };
+  if(diceText){
+    diceText.innerText = `${actorName}: ${diceValue}`;
+  }
+  updatePlayers();
+
+  await animateMove(actorId, startPos, endPos, MOVE_DELAY);
+
+  if(game.action.effect === "snake"){
+    showMoveIndicator(`${actorName} hit a snake and slides to ${finalPos}.`);
+    playSound("snake", SNAKE_SLIDE_DURATION);
+    await sleep(240);
+    const path = snakePaths.get(endPos);
+    await animateAlongPath(actorId, path, SNAKE_SLIDE_DURATION, endPos, finalPos);
+  }else if(game.action.effect === "ladder"){
+    showMoveIndicator(`${actorName} found a ladder and climbs to ${finalPos}.`);
+    playSound("ladder", LADDER_CLIMB_DURATION);
+    await sleep(240);
+    const path = ladderPaths.get(endPos);
+    await animateAlongPath(actorId, path, LADDER_CLIMB_DURATION, endPos, finalPos);
+  }
+
+  applyOnlineGameState(game);
+  maybeShowOnlineActionToast(game);
+  hideMoveIndicator(game.gameOver ? 1800 : 900);
+  updateMultiplayerUI();
+}
+
 function handleHostConnectionClose(showMessage = true){
   multiplayerState.connection = null;
   multiplayerState.players[2] = null;
   multiplayerState.lastActionId = null;
+  hideMoveIndicator();
   if(isOnlineMode()){
     applyOnlineGameState(createBaseGameState());
   }
@@ -824,8 +905,7 @@ function handlePeerMessage(message){
     multiplayerState.localPlayerSlot = 2;
     multiplayerState.players = clonePlayers(message.players);
     multiplayerState.pendingAction = "";
-    applyOnlineGameState(message.game || createBaseGameState());
-    updateMultiplayerUI();
+    animateOnlineGameState(message.game || createBaseGameState());
     showToast(`Joined room ${multiplayerState.roomCode}. Player 1 rolls first.`, "success");
     return;
   }
@@ -834,9 +914,7 @@ function handlePeerMessage(message){
     if(message.players){
       multiplayerState.players = clonePlayers(message.players);
     }
-    applyOnlineGameState(message.game || createBaseGameState());
-    maybeShowOnlineActionToast(message.game);
-    updateMultiplayerUI();
+    animateOnlineGameState(message.game || createBaseGameState());
     return;
   }
 
@@ -1172,9 +1250,8 @@ function buildResolvedTurn(playerId){
 }
 
 function commitOnlineGameState(nextGameState){
-  applyOnlineGameState(nextGameState);
-  maybeShowOnlineActionToast(nextGameState);
   broadcastGameState(nextGameState);
+  animateOnlineGameState(nextGameState);
 }
 
 function commitOnlineTurn(playerId){
@@ -1182,7 +1259,6 @@ function commitOnlineTurn(playerId){
   if(!nextGameState){
     return;
   }
-  isRolling = false;
   commitOnlineGameState(nextGameState);
 }
 
@@ -1216,12 +1292,13 @@ function maybeShowOnlineActionToast(game){
   }
   multiplayerState.lastActionId = game.action.actionId;
   const actorName = getPlayerDisplayName(game.action.playerId);
+  const stepCount = Math.abs((Number(game.action.end) || 0) - (Number(game.action.start) || 0));
   if(game.action.effect === "snake"){
-    showToast(`${actorName} rolled ${game.action.dice}. Snake bite!`, "warn");
+    showToast(`${actorName} rolled ${game.action.dice} and moved ${stepCount} steps. Snake bite!`, "warn");
   }else if(game.action.effect === "ladder"){
-    showToast(`${actorName} rolled ${game.action.dice}. Ladder up!`, "success");
+    showToast(`${actorName} rolled ${game.action.dice} and moved ${stepCount} steps. Ladder up!`, "success");
   }else{
-    showToast(`${actorName} rolled ${game.action.dice}.`, "info");
+    showToast(`${actorName} rolled ${game.action.dice} and moved ${stepCount} steps.`, "info");
   }
   if(game.action.finalPos === 100){
     playSound("win");
@@ -1287,10 +1364,10 @@ let positions = {1:1, 2:1};
 let lastRolls = {1:null, 2:null};
 let isRolling = false;
 let gameOver = false;
-const MOVE_DELAY = 260;
+const MOVE_DELAY = 420;
 const SLIDE_DELAY = 180;
-const SNAKE_SLIDE_DURATION = 1100;
-const LADDER_CLIMB_DURATION = 900;
+const SNAKE_SLIDE_DURATION = 1450;
+const LADDER_CLIMB_DURATION = 1200;
 let confettiTimeoutId = null;
 let rainIntervalId = null;
 
@@ -1306,7 +1383,56 @@ function setDiceTheme(playerId){
     return;
   }
   diceFace.classList.remove("player-1-turn", "player-2-turn");
-  diceFace.classList.add(`player-${playerId}-turn`);
+  diceFace.classList.add("shared-dice");
+}
+
+function ensureMoveIndicator(){
+  if(moveIndicator || !boardWrap || typeof document === "undefined"){
+    return moveIndicator;
+  }
+
+  moveIndicator = document.createElement("div");
+  moveIndicator.id = "move-indicator";
+  moveIndicator.className = "move-indicator";
+  boardWrap.appendChild(moveIndicator);
+  return moveIndicator;
+}
+
+function showMoveIndicator(message){
+  const indicator = ensureMoveIndicator();
+  if(!indicator){
+    return;
+  }
+
+  if(moveIndicatorTimerId){
+    clearTimeout(moveIndicatorTimerId);
+    moveIndicatorTimerId = null;
+  }
+
+  indicator.textContent = message;
+  indicator.classList.add("active");
+}
+
+function hideMoveIndicator(delay = 0){
+  const indicator = ensureMoveIndicator();
+  if(!indicator){
+    return;
+  }
+
+  if(moveIndicatorTimerId){
+    clearTimeout(moveIndicatorTimerId);
+    moveIndicatorTimerId = null;
+  }
+
+  const hide = () => {
+    indicator.classList.remove("active");
+  };
+
+  if(delay > 0){
+    moveIndicatorTimerId = setTimeout(hide, delay);
+  }else{
+    hide();
+  }
 }
 
 function updateTurnUI(){
@@ -1318,15 +1444,20 @@ function updateTurnUI(){
     const isActiveTurn = currentPlayer === playerId;
     const isWinner = gameOver && currentPlayer === playerId;
     const canAct = canPlayerAct(playerId);
+    const localOnlyOnlineControl = isOnlineMode() && multiplayerState.localPlayerSlot;
+    const isLocalPlayerCard = !localOnlyOnlineControl || multiplayerState.localPlayerSlot === playerId;
 
     if(button){
+      button.hidden = localOnlyOnlineControl && !isLocalPlayerCard;
       button.disabled = !canAct;
       if(gameOver && isOnlineMode()){
-        button.textContent = playerId === 1 ? "Start Online Game" : "Host Restarts";
+        button.textContent = multiplayerState.localPlayerSlot === 1 ? "Start Online Game" : "Waiting for Host";
       }else if(gameOver){
         button.textContent = "Start New Game";
       }else if(isRolling && isActiveTurn){
         button.textContent = `Rolling for ${getPlayerDisplayName(playerId)}...`;
+      }else if(isOnlineMode() && multiplayerState.localPlayerSlot === playerId && !isActiveTurn){
+        button.textContent = "Wait for Your Turn";
       }else{
         button.textContent = `Roll for ${getPlayerDisplayName(playerId)}`;
       }
@@ -1335,6 +1466,8 @@ function updateTurnUI(){
     if(state){
       if(gameOver){
         state.textContent = isWinner ? "Winner" : "Finished";
+      }else if(isOnlineMode() && localOnlyOnlineControl && !isLocalPlayerCard){
+        state.textContent = isActiveTurn ? "Opponent turn" : "Opponent";
       }else if(isRolling && isActiveTurn){
         state.textContent = "Rolling...";
       }else if(isOnlineMode() && multiplayerState.localPlayerSlot === playerId){
@@ -1745,6 +1878,7 @@ function resetGame(){
     diceText.innerText = "Dice: -";
   }
   setDiceFace(1);
+  hideMoveIndicator();
   updatePlayers();
   hideWinCelebration();
 }
@@ -1892,15 +2026,22 @@ function sleep(ms){
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-async function animateMove(from, to, delay = MOVE_DELAY){
+async function animateMove(playerId, from, to, delay = MOVE_DELAY){
+  const totalSteps = Math.abs(to - from);
+  const actorName = getPlayerDisplayName(playerId);
   if(from === to){
+    showMoveIndicator(`${actorName} stays on cell ${from}. Exact roll needed.`);
+    await sleep(700);
     return;
   }
   const step = from < to ? 1 : -1;
   let pos = from;
+  let movedSteps = 0;
   while(pos !== to){
     pos += step;
-    positions[currentPlayer] = pos;
+    movedSteps += 1;
+    positions[playerId] = pos;
+    showMoveIndicator(`${actorName} moves ${movedSteps}/${totalSteps} steps to cell ${pos}.`);
     updatePlayers();
     playStepSound();
     await sleep(delay);
@@ -2039,11 +2180,12 @@ async function rollDice(){
   const start = positions[currentPlayer];
   const end = getNextPosition(start, dice);
 
-  await animateMove(start, end, MOVE_DELAY);
+  await animateMove(currentPlayer, start, end, MOVE_DELAY);
 
   let finalPos = end;
   if(snakeMap[end]){
     showToast("Snake bite! Go down.", "warn");
+    showMoveIndicator(`${getPlayerDisplayName(currentPlayer)} hit a snake and slides to ${snakeMap[end]}.`);
     playSound("snake", SNAKE_SLIDE_DURATION);
     const snakeEnd = snakeMap[end];
     await sleep(200);
@@ -2052,6 +2194,7 @@ async function rollDice(){
     finalPos = snakeEnd;
   }else if(ladderMap[end]){
     showToast("Ladder! Climb up.", "success");
+    showMoveIndicator(`${getPlayerDisplayName(currentPlayer)} found a ladder and climbs to ${ladderMap[end]}.`);
     playSound("ladder", LADDER_CLIMB_DURATION);
     const ladderEnd = ladderMap[end];
     await sleep(200);
@@ -2067,6 +2210,7 @@ async function rollDice(){
     gameOver = true;
     playSound("win");
     isRolling = false;
+    hideMoveIndicator(1800);
     showWinCelebration(currentPlayer);
     return;
   }
@@ -2074,6 +2218,7 @@ async function rollDice(){
   currentPlayer = currentPlayer === 1 ? 2 : 1;
   isRolling = false;
   updatePlayers();
+  hideMoveIndicator(900);
 }
 
 function rollDiceForPlayer(playerId){
@@ -2130,6 +2275,7 @@ if(!window.__snakesLadderReactBooted){
 
   createBoard();
   renderOverlay();
+  ensureMoveIndicator();
   initMultiplayerControls();
   updatePlayers();
   setDiceFace(1);
