@@ -1167,6 +1167,8 @@ function buildResolvedTurn(playerId){
     },
     updatedAt: Date.now()
   };
+
+  return nextGameState;
 }
 
 function commitOnlineGameState(nextGameState){
