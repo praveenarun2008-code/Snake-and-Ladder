@@ -320,6 +320,7 @@ const multiplayerState = {
   clientId: getClientId(),
   lastActionId: null,
   isHost: false,
+  reconnectingToServer: false,
   pendingAction: "",
   players: {}
 };
@@ -447,6 +448,12 @@ function updateMultiplayerUI(){
     setMultiplayerStatus("Creating room...");
   }else if(multiplayerState.pendingAction === "join"){
     setMultiplayerStatus("Joining room...");
+  }else if(multiplayerState.reconnectingToServer && multiplayerState.roomCode){
+    if(multiplayerState.isHost){
+      setMultiplayerStatus(`Reconnecting room ${multiplayerState.roomCode}...`);
+    }else{
+      setMultiplayerStatus(`Reconnecting to room ${multiplayerState.roomCode}...`);
+    }
   }else if(!multiplayerState.peerSupported){
     setMultiplayerStatus("Online mode needs the PeerJS script to load. Local mode still works.");
   }else if(!online){
@@ -605,7 +612,7 @@ function scheduleWarmHostPeer(delay = 0){
           token !== warmHostState.token ||
           isOnlineMode() ||
           multiplayerState.roomCode ||
-          multiplayerState.pendingAction
+          multiplayerState.pendingAction === "join"
         ){
           peer.destroy();
           return null;
@@ -692,6 +699,7 @@ async function getPreparedHostPeer(){
 }
 
 function closePeerSession(notifyRemote = false){
+  multiplayerState.reconnectingToServer = false;
   if(notifyRemote && multiplayerState.connection && multiplayerState.connection.open){
     sendPeerMessage({type: multiplayerState.isHost ? "host-left" : "guest-left"});
   }
@@ -709,6 +717,7 @@ function resetOnlineState(){
   multiplayerState.localPlayerSlot = null;
   multiplayerState.lastActionId = null;
   multiplayerState.isHost = false;
+  multiplayerState.reconnectingToServer = false;
   multiplayerState.pendingAction = "";
   multiplayerState.players = getDefaultOnlinePlayers();
 }
@@ -902,7 +911,55 @@ function createGuestPeer(){
 }
 
 function attachPeerHandlers(peer){
+  peer.on("open", id => {
+    if(multiplayerState.peer !== peer){
+      return;
+    }
+
+    const reconnected = multiplayerState.reconnectingToServer;
+    multiplayerState.reconnectingToServer = false;
+
+    if(multiplayerState.isHost && !multiplayerState.roomCode){
+      multiplayerState.roomCode = sanitizeRoomCode(id);
+    }
+
+    updateMultiplayerUI();
+
+    if(reconnected){
+      if(multiplayerState.isHost){
+        showToast(`Room ${multiplayerState.roomCode} reconnected. Your friend can join now.`, "success");
+      }else{
+        showToast(`Reconnected to room ${multiplayerState.roomCode}.`, "success");
+      }
+    }
+  });
+  peer.on("disconnected", () => {
+    if(
+      multiplayerState.peer !== peer ||
+      !multiplayerState.roomCode ||
+      multiplayerState.reconnectingToServer
+    ){
+      return;
+    }
+
+    multiplayerState.reconnectingToServer = true;
+    updateMultiplayerUI();
+    showToast("Connection to the online room dropped. Trying to reconnect...", "warn");
+
+    try{
+      peer.reconnect();
+    }catch(error){
+      multiplayerState.reconnectingToServer = false;
+      showToast("Could not reconnect the online room.", "warn");
+      if(multiplayerState.isHost){
+        setLocalMode(true);
+      }else{
+        handleGuestConnectionClose(false);
+      }
+    }
+  });
   peer.on("error", error => {
+    multiplayerState.reconnectingToServer = false;
     showToast(getPeerErrorMessage(error), "warn");
     if(multiplayerState.isHost){
       setLocalMode(true);
@@ -918,12 +975,17 @@ async function createOnlineRoom(){
     return;
   }
 
-  const roomCode = generateRoomCode();
+  if(multiplayerState.pendingAction){
+    return;
+  }
+
   closePeerSession(false);
   resetOnlineState();
+  multiplayerState.pendingAction = "create";
+  updateMultiplayerUI();
 
   try{
-    const {peer} = await createHostPeer(roomCode);
+    const {peer, roomCode} = await getPreparedHostPeer();
     multiplayerState.peer = peer;
     multiplayerState.isHost = true;
     multiplayerState.mode = "online";
@@ -950,9 +1012,11 @@ async function createOnlineRoom(){
     });
 
     applyOnlineGameState(createBaseGameState());
+    multiplayerState.pendingAction = "";
     updateMultiplayerUI();
     showToast(`Room ${roomCode} created. Share the code with your friend.`, "success");
   }catch(error){
+    multiplayerState.pendingAction = "";
     showToast(getPeerErrorMessage(error), "warn");
     setLocalMode(true);
   }
@@ -964,14 +1028,21 @@ async function joinOnlineRoom(){
     return;
   }
 
+  if(multiplayerState.pendingAction){
+    return;
+  }
+
   const roomCode = sanitizeRoomCode(roomCodeInput ? roomCodeInput.value : "");
   if(!roomCode){
     showToast("Enter a valid room code.", "warn");
     return;
   }
 
+  cancelWarmHostPeer();
   closePeerSession(false);
   resetOnlineState();
+  multiplayerState.pendingAction = "join";
+  updateMultiplayerUI();
 
   try{
     const peer = await createGuestPeer();
@@ -1000,6 +1071,7 @@ async function joinOnlineRoom(){
       updateMultiplayerUI();
     });
   }catch(error){
+    multiplayerState.pendingAction = "";
     showToast(getPeerErrorMessage(error), "warn");
     setLocalMode(true);
   }
@@ -1019,6 +1091,7 @@ function setLocalMode(skipToast = false){
   resetOnlineState();
   resetGame();
   updateMultiplayerUI();
+  scheduleWarmHostPeer(150);
   if(!skipToast){
     showToast("Back to local multiplayer mode.", "info");
   }
@@ -2034,11 +2107,9 @@ if(!window.__snakesLadderReactBooted){
   updatePlayers();
   setDiceFace(1);
   setDiceTheme(1);
+  scheduleWarmHostPeer();
   window.addEventListener("resize", () => {
     renderOverlay();
     updatePlayers();
   });
 }
-
-
-
