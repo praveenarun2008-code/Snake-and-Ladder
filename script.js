@@ -1,4 +1,4 @@
-const board = document.getElementById("board");
+﻿const board = document.getElementById("board");
 const boardWrap = board ? board.closest(".board-wrap") : null;
 const overlay = document.getElementById("overlay");
 const playerLayer = document.getElementById("player-layer");
@@ -20,6 +20,12 @@ const createRoomButton = document.getElementById("create-room-btn");
 const joinRoomButton = document.getElementById("join-room-btn");
 const leaveRoomButton = document.getElementById("leave-room-btn");
 const localModeButton = document.getElementById("local-mode-btn");
+const copyRoomLinkButton = document.getElementById("copy-room-link-btn");
+const whatsappShareButton = document.getElementById("whatsapp-share-btn");
+const chatMessagesEl = document.getElementById("chat-messages");
+const chatInput = document.getElementById("chat-input");
+const chatSendButton = document.getElementById("chat-send-btn");
+const reactionButtons = Array.from(document.querySelectorAll("[data-reaction]"));
 const sharedRollButton = document.getElementById("roll-btn");
 const localPlayerCountSelect = document.getElementById("local-player-count");
 const PLAYER_IDS = [1, 2, 3, 4];
@@ -27,6 +33,11 @@ const MAX_ONLINE_PLAYERS = PLAYER_IDS.length;
 const MIN_ONLINE_PLAYERS = 2;
 const MIN_LOCAL_PLAYERS = 2;
 const MAX_LOCAL_PLAYERS = PLAYER_IDS.length;
+const CHAT_MAX_MESSAGES = 60;
+const CHAT_MAX_LENGTH = 160;
+const INVITE_AUTO_JOIN_DELAY = 220;
+const INVITE_AUTO_JOIN_MAX_ATTEMPTS = 4;
+const INVITE_AUTO_JOIN_RETRY_DELAY = 900;
 let localPlayerCount = MIN_LOCAL_PLAYERS;
 const scoreCards = Object.fromEntries(PLAYER_IDS.map(playerId => [playerId, document.querySelector(`[data-score-card="${playerId}"]`)]));
 const turnStates = Object.fromEntries(PLAYER_IDS.map(playerId => [playerId, document.getElementById(`turn-state-${playerId}`)]));
@@ -316,7 +327,8 @@ const multiplayerState = {
   isHost: false,
   reconnectingToServer: false,
   pendingAction: "",
-  players: {}
+  players: {},
+  chatMessages: []
 };
 
 const warmHostState = {
@@ -326,6 +338,16 @@ const warmHostState = {
   retryTimerId: null,
   token: 0
 };
+
+const warmGuestState = {
+  peer: null,
+  pending: null,
+  retryTimerId: null,
+  token: 0
+};
+
+const pendingInviteRoomCode = getInviteRoomCode();
+let inviteAutoJoinAttempted = false;
 
 function getClientId(){
   const storageKey = "snakes-ladders-client-id";
@@ -360,6 +382,157 @@ function generateRoomCode(length = 5){
     code += chars[Math.floor(Math.random() * chars.length)];
   }
   return code;
+}
+
+function getInviteRoomCode(){
+  if(typeof window === "undefined"){
+    return "";
+  }
+  try{
+    const url = new URL(window.location.href);
+    return sanitizeRoomCode(url.searchParams.get("room") || "");
+  }catch(error){
+    return "";
+  }
+}
+
+function getRoomInviteLink(roomCode = multiplayerState.roomCode){
+  const nextRoomCode = sanitizeRoomCode(roomCode);
+  if(!nextRoomCode || typeof window === "undefined"){
+    return "";
+  }
+  try{
+    const url = new URL(window.location.href);
+    url.search = "";
+    url.hash = "";
+    url.searchParams.set("room", nextRoomCode);
+    return url.toString();
+  }catch(error){
+    return "";
+  }
+}
+
+function getEventId(prefix = "evt"){
+  if(typeof crypto !== "undefined" && crypto.randomUUID){
+    return `${prefix}-${crypto.randomUUID()}`;
+  }
+  return `${prefix}-${Date.now()}-${Math.floor(Math.random() * 100000)}`;
+}
+
+function hasJoinIntent(){
+  return Boolean(pendingInviteRoomCode || sanitizeRoomCode(roomCodeInput ? roomCodeInput.value : ""));
+}
+
+function cloneChatMessages(chatMessages = []){
+  return chatMessages.map(entry => ({...entry}));
+}
+
+function isChatAvailable(){
+  return isOnlineMode() && Boolean(multiplayerState.roomCode);
+}
+
+function createChatEntry({
+  kind = "message",
+  text = "",
+  playerId = null,
+  name = "",
+  id = getEventId(kind === "reaction" ? "reaction" : "chat"),
+  createdAt = Date.now()
+} = {}){
+  const normalizedText = String(text || "").trim().slice(0, CHAT_MAX_LENGTH);
+  return {
+    id,
+    kind,
+    text: normalizedText,
+    playerId: playerId ? Number(playerId) : null,
+    name: name || (playerId ? getPlayerDisplayName(playerId) : "Room"),
+    createdAt
+  };
+}
+
+function setChatMessages(chatMessages = []){
+  multiplayerState.chatMessages = cloneChatMessages(chatMessages).slice(-CHAT_MAX_MESSAGES);
+  renderChatMessages();
+}
+
+function appendChatEntry(entry, {broadcast = false} = {}){
+  if(!entry || !entry.id){
+    return;
+  }
+  if(multiplayerState.chatMessages.some(message => message.id === entry.id)){
+    return;
+  }
+  multiplayerState.chatMessages = [...multiplayerState.chatMessages, {...entry}].slice(-CHAT_MAX_MESSAGES);
+  renderChatMessages();
+  if(broadcast){
+    sendPeerMessage({type: "chat-event", entry});
+  }
+}
+
+function addRoomSystemMessage(text, {broadcast = false} = {}){
+  const entry = createChatEntry({
+    kind: "system",
+    text,
+    name: "Room"
+  });
+  appendChatEntry(entry, {broadcast});
+}
+
+function getChatEmptyState(){
+  if(!isChatAvailable()){
+    return "Join an online room to chat and react.";
+  }
+  return "Room chat is ready. Say hi before the next roll.";
+}
+
+function renderChatMessages(){
+  if(!chatMessagesEl){
+    return;
+  }
+
+  chatMessagesEl.innerHTML = "";
+  if(!multiplayerState.chatMessages.length){
+    const emptyState = document.createElement("p");
+    emptyState.className = "chat-empty";
+    emptyState.textContent = getChatEmptyState();
+    chatMessagesEl.appendChild(emptyState);
+    return;
+  }
+
+  const fragment = document.createDocumentFragment();
+  multiplayerState.chatMessages.forEach(entry => {
+    const item = document.createElement("article");
+    const isSystem = entry.kind === "system";
+    const isReaction = entry.kind === "reaction";
+    const isSelf = !isSystem && Number(entry.playerId) === Number(multiplayerState.localPlayerSlot);
+    item.className = [
+      "chat-item",
+      isSystem ? "system" : "player",
+      isReaction ? "reaction" : "message",
+      isSelf ? "self" : ""
+    ].filter(Boolean).join(" ");
+
+    if(isSystem){
+      item.textContent = entry.text;
+      fragment.appendChild(item);
+      return;
+    }
+
+    const meta = document.createElement("div");
+    meta.className = "chat-meta";
+    meta.textContent = isSelf ? "You" : (entry.name || getPlayerDisplayName(entry.playerId));
+
+    const bubble = document.createElement("div");
+    bubble.className = "chat-bubble";
+    bubble.textContent = entry.text;
+
+    item.appendChild(meta);
+    item.appendChild(bubble);
+    fragment.appendChild(item);
+  });
+
+  chatMessagesEl.appendChild(fragment);
+  chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
 }
 
 function getRoomPlayers(){
@@ -501,6 +674,8 @@ function updateMultiplayerUI(){
   const online = isOnlineMode();
   const roomReady = isRoomReady();
   const busy = Boolean(multiplayerState.pendingAction);
+  const canShareRoom = inRoom && !busy;
+  const chatEnabled = inRoom && !busy;
   const roomText = inRoom ? `Room: ${multiplayerState.roomCode}` : "Room: -";
 
   if(roomCodeDisplay){
@@ -521,6 +696,21 @@ function updateMultiplayerUI(){
   if(localPlayerCountSelect){
     localPlayerCountSelect.disabled = online || busy;
   }
+  if(copyRoomLinkButton){
+    copyRoomLinkButton.disabled = !canShareRoom;
+  }
+  if(whatsappShareButton){
+    whatsappShareButton.disabled = !canShareRoom;
+  }
+  if(chatInput){
+    chatInput.disabled = !chatEnabled;
+  }
+  if(chatSendButton){
+    chatSendButton.disabled = !chatEnabled;
+  }
+  reactionButtons.forEach(button => {
+    button.disabled = !chatEnabled;
+  });
 
   if(multiplayerState.pendingAction === "create"){
     setMultiplayerStatus("Creating room...");
@@ -544,6 +734,7 @@ function updateMultiplayerUI(){
   }
 
   updatePlayerNames();
+  renderChatMessages();
 }
 
 function getPeerErrorMessage(error){
@@ -651,6 +842,13 @@ function clearWarmHostRetry(){
   }
 }
 
+function clearWarmGuestRetry(){
+  if(warmGuestState.retryTimerId){
+    clearTimeout(warmGuestState.retryTimerId);
+    warmGuestState.retryTimerId = null;
+  }
+}
+
 function detachWarmHostPeer(peer){
   if(!peer){
     return;
@@ -678,6 +876,34 @@ function resetWarmHostState({destroyPeer = false} = {}){
 function cancelWarmHostPeer(){
   warmHostState.token += 1;
   resetWarmHostState({destroyPeer: true});
+}
+
+function detachWarmGuestPeer(peer){
+  if(!peer){
+    return;
+  }
+  peer.off("open");
+  peer.off("connection");
+  peer.off("error");
+  peer.off("close");
+  peer.off("disconnected");
+}
+
+function resetWarmGuestState({destroyPeer = false} = {}){
+  clearWarmGuestRetry();
+  if(warmGuestState.peer){
+    detachWarmGuestPeer(warmGuestState.peer);
+    if(destroyPeer){
+      warmGuestState.peer.destroy();
+    }
+  }
+  warmGuestState.peer = null;
+  warmGuestState.pending = null;
+}
+
+function cancelWarmGuestPeer(){
+  warmGuestState.token += 1;
+  resetWarmGuestState({destroyPeer: true});
 }
 
 function scheduleWarmHostPeer(delay = 0){
@@ -772,6 +998,98 @@ function claimWarmHostPeer(){
   return {peer, roomCode};
 }
 
+function scheduleWarmGuestPeer(delay = 0){
+  if(
+    !multiplayerState.peerSupported ||
+    isOnlineMode() ||
+    multiplayerState.roomCode ||
+    multiplayerState.pendingAction ||
+    warmGuestState.peer ||
+    warmGuestState.pending ||
+    !hasJoinIntent()
+  ){
+    return;
+  }
+
+  clearWarmGuestRetry();
+  const token = ++warmGuestState.token;
+  const startWarmup = () => {
+    if(
+      token !== warmGuestState.token ||
+      !multiplayerState.peerSupported ||
+      isOnlineMode() ||
+      multiplayerState.roomCode ||
+      multiplayerState.pendingAction ||
+      warmGuestState.peer ||
+      warmGuestState.pending ||
+      !hasJoinIntent()
+    ){
+      return;
+    }
+
+    warmGuestState.pending = createGuestPeer()
+      .then(peer => {
+        if(
+          token !== warmGuestState.token ||
+          isOnlineMode() ||
+          multiplayerState.roomCode ||
+          multiplayerState.pendingAction === "create" ||
+          !hasJoinIntent()
+        ){
+          peer.destroy();
+          return null;
+        }
+
+        const recycleWarmPeer = () => {
+          if(warmGuestState.peer !== peer){
+            return;
+          }
+          cancelWarmGuestPeer();
+          scheduleWarmGuestPeer(400);
+        };
+
+        warmGuestState.peer = peer;
+        peer.on("error", recycleWarmPeer);
+        peer.on("close", recycleWarmPeer);
+        peer.on("disconnected", recycleWarmPeer);
+        return peer;
+      })
+      .catch(() => null)
+      .finally(() => {
+        if(token !== warmGuestState.token){
+          return;
+        }
+        warmGuestState.pending = null;
+        if(!warmGuestState.peer && hasJoinIntent()){
+          scheduleWarmGuestPeer(300);
+        }
+      });
+  };
+
+  if(delay > 0){
+    warmGuestState.retryTimerId = setTimeout(startWarmup, delay);
+  }else{
+    startWarmup();
+  }
+}
+
+function claimWarmGuestPeer(){
+  if(!warmGuestState.peer){
+    return null;
+  }
+
+  const peer = warmGuestState.peer;
+  if(!isPeerActive(peer)){
+    cancelWarmGuestPeer();
+    scheduleWarmGuestPeer(120);
+    return null;
+  }
+
+  warmGuestState.token += 1;
+  resetWarmGuestState();
+  return peer;
+}
+
 async function createFreshHostPeer(maxAttempts = 4){
   let lastError = null;
   for(let attempt = 0; attempt < maxAttempts; attempt++){
@@ -806,6 +1124,23 @@ async function getPreparedHostPeer(){
   return createFreshHostPeer();
 }
 
+async function getPreparedGuestPeer(){
+  const warmPeer = claimWarmGuestPeer();
+  if(warmPeer){
+    return warmPeer;
+  }
+
+  if(warmGuestState.pending){
+    await warmGuestState.pending;
+    const warmedAfterWait = claimWarmGuestPeer();
+    if(warmedAfterWait){
+      return warmedAfterWait;
+    }
+  }
+
+  return createGuestPeer();
+}
+
 function closePeerSession(notifyRemote = false){
   multiplayerState.reconnectingToServer = false;
   if(notifyRemote){
@@ -838,6 +1173,7 @@ function resetOnlineState(){
   multiplayerState.connection = null;
   multiplayerState.connections = {};
   multiplayerState.players = getDefaultOnlinePlayers();
+  multiplayerState.chatMessages = [];
 }
 
 function applyOnlineGameState(game){
@@ -1023,11 +1359,13 @@ function handlePeerMessage(message, connection = null){
       roomCode: multiplayerState.roomCode,
       playerId: slot,
       players: clonePlayers(multiplayerState.players),
-      game: gameState
+      game: gameState,
+      chatMessages: cloneChatMessages(multiplayerState.chatMessages)
     }, connection);
 
     broadcastGameState(gameState);
     applyOnlineGameState(gameState);
+    addRoomSystemMessage(`${getPlayerDisplayName(slot)} joined the room.`, {broadcast: true});
     updateMultiplayerUI();
     showToast(`${getPlayerDisplayName(slot)} joined room ${multiplayerState.roomCode}.`, "success");
     return;
@@ -1039,6 +1377,7 @@ function handlePeerMessage(message, connection = null){
     multiplayerState.localPlayerSlot = Number(message.playerId) || 2;
     multiplayerState.players = clonePlayers(message.players);
     multiplayerState.pendingAction = "";
+    setChatMessages(message.chatMessages || []);
     animateOnlineGameState(message.game || createBaseGameState());
     showToast(`Joined room ${multiplayerState.roomCode} as ${getPlayerDisplayName(multiplayerState.localPlayerSlot)}. Player 1 rolls first.`, "success");
     return;
@@ -1049,6 +1388,39 @@ function handlePeerMessage(message, connection = null){
       multiplayerState.players = clonePlayers(message.players);
     }
     animateOnlineGameState(message.game || createBaseGameState());
+    return;
+  }
+
+  if(message.type === "chat-event"){
+    appendChatEntry(message.entry);
+    return;
+  }
+
+  if(message.type === "chat-message" && multiplayerState.isHost){
+    const playerId = connection && connection.__playerSlot ? connection.__playerSlot : null;
+    const entry = createChatEntry({
+      kind: "message",
+      text: message.text,
+      playerId,
+      name: getPlayerDisplayName(playerId)
+    });
+    if(entry.text){
+      appendChatEntry(entry, {broadcast: true});
+    }
+    return;
+  }
+
+  if(message.type === "reaction-message" && multiplayerState.isHost){
+    const playerId = connection && connection.__playerSlot ? connection.__playerSlot : null;
+    const entry = createChatEntry({
+      kind: "reaction",
+      text: message.reaction,
+      playerId,
+      name: getPlayerDisplayName(playerId)
+    });
+    if(entry.text){
+      appendChatEntry(entry, {broadcast: true});
+    }
     return;
   }
 
@@ -1212,6 +1584,7 @@ async function createOnlineRoom(){
     return;
   }
 
+  cancelWarmGuestPeer();
   closePeerSession(false);
   resetOnlineState();
   multiplayerState.pendingAction = "create";
@@ -1231,6 +1604,7 @@ async function createOnlineRoom(){
         name: getPlayerName()
       }
     };
+    setChatMessages([]);
 
     attachPeerHandlers(peer);
     peer.on("connection", connection => {
@@ -1248,7 +1622,21 @@ async function createOnlineRoom(){
   }
 }
 
-async function joinOnlineRoom(){
+function scheduleInviteAutoJoinRetry(roomCode, attempt){
+  window.setTimeout(() => {
+    joinOnlineRoom({
+      roomCodeOverride: roomCode,
+      isAutoJoin: true,
+      attempt
+    });
+  }, INVITE_AUTO_JOIN_RETRY_DELAY * attempt);
+}
+
+function shouldRetryInviteJoin(error){
+  return Boolean(error && (error.type === "peer-unavailable" || error.type === "network"));
+}
+
+async function joinOnlineRoom({roomCodeOverride = "", isAutoJoin = false, attempt = 1} = {}){
   if(!multiplayerState.peerSupported){
     showToast("Online mode could not load PeerJS.", "warn");
     return;
@@ -1258,7 +1646,7 @@ async function joinOnlineRoom(){
     return;
   }
 
-  const roomCode = sanitizeRoomCode(roomCodeInput ? roomCodeInput.value : "");
+  const roomCode = sanitizeRoomCode(roomCodeOverride || (roomCodeInput ? roomCodeInput.value : ""));
   if(!roomCode){
     showToast("Enter a valid room code.", "warn");
     return;
@@ -1268,15 +1656,17 @@ async function joinOnlineRoom(){
   closePeerSession(false);
   resetOnlineState();
   multiplayerState.pendingAction = "join";
+  multiplayerState.roomCode = roomCode;
   updateMultiplayerUI();
 
   try{
-    const peer = await createGuestPeer();
+    const peer = await getPreparedGuestPeer();
     multiplayerState.peer = peer;
     multiplayerState.roomCode = roomCode;
     multiplayerState.mode = "online";
     multiplayerState.isHost = false;
     multiplayerState.players = getDefaultOnlinePlayers();
+    setChatMessages([]);
 
     attachPeerHandlers(peer);
     const connection = peer.connect(roomCode, {reliable: true});
@@ -1292,6 +1682,12 @@ async function joinOnlineRoom(){
     });
   }catch(error){
     multiplayerState.pendingAction = "";
+    if(isAutoJoin && shouldRetryInviteJoin(error) && attempt < INVITE_AUTO_JOIN_MAX_ATTEMPTS){
+      setLocalMode(true);
+      setMultiplayerStatus(`Trying to join room ${roomCode}... (${attempt + 1}/${INVITE_AUTO_JOIN_MAX_ATTEMPTS})`);
+      scheduleInviteAutoJoinRetry(roomCode, attempt + 1);
+      return;
+    }
     showToast(getPeerErrorMessage(error), "warn");
     setLocalMode(true);
   }
@@ -1312,9 +1708,116 @@ function setLocalMode(skipToast = false){
   resetGame();
   updateMultiplayerUI();
   scheduleWarmHostPeer(150);
+  if(hasJoinIntent()){
+    scheduleWarmGuestPeer(80);
+  }
   if(!skipToast){
     showToast("Back to local multiplayer mode.", "info");
   }
+}
+
+async function copyRoomInviteLink(){
+  const inviteLink = getRoomInviteLink();
+  if(!inviteLink){
+    showToast("Create or join a room first.", "info");
+    return;
+  }
+  try{
+    if(navigator.clipboard && navigator.clipboard.writeText){
+      await navigator.clipboard.writeText(inviteLink);
+    }else{
+      const tempInput = document.createElement("textarea");
+      tempInput.value = inviteLink;
+      tempInput.setAttribute("readonly", "true");
+      tempInput.style.position = "absolute";
+      tempInput.style.left = "-9999px";
+      document.body.appendChild(tempInput);
+      tempInput.select();
+      document.execCommand("copy");
+      document.body.removeChild(tempInput);
+    }
+    showToast("Room link copied. Share it with your friends.", "success");
+  }catch(error){
+    showToast("Could not copy the room link.", "warn");
+  }
+}
+
+function shareRoomOnWhatsApp(){
+  const roomCode = sanitizeRoomCode(multiplayerState.roomCode);
+  const inviteLink = getRoomInviteLink(roomCode);
+  if(!roomCode || !inviteLink){
+    showToast("Create or join a room first.", "info");
+    return;
+  }
+  const message = `Join my Snake & Ladder room ${roomCode}: ${inviteLink}`;
+  window.open(`https://wa.me/?text=${encodeURIComponent(message)}`, "_blank", "noopener,noreferrer");
+}
+
+function sendChatMessage(){
+  if(!isChatAvailable()){
+    showToast("Join an online room to use chat.", "info");
+    return;
+  }
+  const text = String(chatInput ? chatInput.value : "").trim().slice(0, CHAT_MAX_LENGTH);
+  if(!text){
+    return;
+  }
+
+  if(multiplayerState.isHost){
+    const entry = createChatEntry({
+      kind: "message",
+      text,
+      playerId: multiplayerState.localPlayerSlot || 1,
+      name: getPlayerDisplayName(multiplayerState.localPlayerSlot || 1)
+    });
+    appendChatEntry(entry, {broadcast: true});
+  }else{
+    sendPeerMessage({type: "chat-message", text});
+  }
+
+  if(chatInput){
+    chatInput.value = "";
+    chatInput.focus();
+  }
+}
+
+function sendReaction(reaction){
+  const nextReaction = String(reaction || "").trim().slice(0, 24);
+  if(!isChatAvailable() || !nextReaction){
+    return;
+  }
+
+  if(multiplayerState.isHost){
+    const entry = createChatEntry({
+      kind: "reaction",
+      text: nextReaction,
+      playerId: multiplayerState.localPlayerSlot || 1,
+      name: getPlayerDisplayName(multiplayerState.localPlayerSlot || 1)
+    });
+    appendChatEntry(entry, {broadcast: true});
+  }else{
+    sendPeerMessage({type: "reaction-message", reaction: nextReaction});
+  }
+}
+
+function maybeAutoJoinInviteRoom(){
+  if(inviteAutoJoinAttempted || !pendingInviteRoomCode){
+    return;
+  }
+  inviteAutoJoinAttempted = true;
+  if(roomCodeInput){
+    roomCodeInput.value = pendingInviteRoomCode;
+  }
+  scheduleWarmGuestPeer(0);
+  window.setTimeout(() => {
+    if(!multiplayerState.roomCode && !multiplayerState.pendingAction){
+      joinOnlineRoom({
+        roomCodeOverride: pendingInviteRoomCode,
+        isAutoJoin: true,
+        attempt: 1
+      });
+    }
+  }, INVITE_AUTO_JOIN_DELAY);
 }
 
 function updateLocalPlayerCountTheme(){
@@ -1462,6 +1965,17 @@ function initMultiplayerControls(){
   if(roomCodeInput){
     roomCodeInput.addEventListener("input", () => {
       roomCodeInput.value = sanitizeRoomCode(roomCodeInput.value);
+      if(hasJoinIntent()){
+        scheduleWarmGuestPeer(0);
+      }else{
+        cancelWarmGuestPeer();
+      }
+    });
+    roomCodeInput.addEventListener("keydown", event => {
+      if(event.key === "Enter"){
+        event.preventDefault();
+        joinOnlineRoom();
+      }
     });
   }
   if(createRoomButton){
@@ -1484,7 +1998,39 @@ function initMultiplayerControls(){
       setLocalMode();
     });
   }
+  if(copyRoomLinkButton){
+    copyRoomLinkButton.addEventListener("click", () => {
+      copyRoomInviteLink();
+    });
+  }
+  if(whatsappShareButton){
+    whatsappShareButton.addEventListener("click", () => {
+      shareRoomOnWhatsApp();
+    });
+  }
+  if(chatSendButton){
+    chatSendButton.addEventListener("click", () => {
+      sendChatMessage();
+    });
+  }
+  if(chatInput){
+    chatInput.addEventListener("keydown", event => {
+      if(event.key === "Enter"){
+        event.preventDefault();
+        sendChatMessage();
+      }
+    });
+  }
+  reactionButtons.forEach(button => {
+    button.addEventListener("click", () => {
+      sendReaction(button.dataset.reaction || button.textContent);
+    });
+  });
+  if(pendingInviteRoomCode && roomCodeInput){
+    roomCodeInput.value = pendingInviteRoomCode;
+  }
   updateMultiplayerUI();
+  maybeAutoJoinInviteRoom();
 }
 
 const snakes = [
@@ -2430,9 +2976,13 @@ if(!window.__snakesLadderReactBooted){
   setDiceFace(1);
   setDiceTheme(1);
   scheduleWarmHostPeer();
+  if(hasJoinIntent()){
+    scheduleWarmGuestPeer(80);
+  }
   window.addEventListener("resize", () => {
     renderOverlay();
     updatePlayers();
   });
 }
+
 

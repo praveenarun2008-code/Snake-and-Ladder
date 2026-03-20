@@ -1,7 +1,8 @@
-import React, { useEffect } from "react";
+﻿import React, { useEffect } from "react";
 
 function App() {
   const playerIds = [1, 2, 3, 4];
+  const quickReactions = ["GG", "WOW", "LOL", "OOPS"];
 
   useEffect(() => {
     import("../script.js");
@@ -49,7 +50,35 @@ function App() {
                 <button id="join-room-btn" className="secondary-btn" type="button">Join</button>
               </div>
               <p id="room-code-display" className="meta-line meta-strong">Room: -</p>
+              <div className="room-share-row">
+                <button id="copy-room-link-btn" className="secondary-btn" type="button" disabled>Copy Link</button>
+                <button id="whatsapp-share-btn" className="secondary-btn whatsapp-btn" type="button" disabled>WhatsApp</button>
+              </div>
               <button id="leave-room-btn" className="ghost-btn" type="button" disabled>Leave Room</button>
+            </div>
+
+            <div className="chat-panel">
+              <div className="panel-title">Room Chat</div>
+              <div id="chat-messages" className="chat-messages" aria-live="polite">
+                <p className="chat-empty">Join an online room to chat and react.</p>
+              </div>
+              <div className="reaction-row">
+                {quickReactions.map(reaction => (
+                  <button
+                    key={reaction}
+                    className="reaction-btn"
+                    type="button"
+                    data-reaction={reaction}
+                    aria-label={`Send reaction ${reaction}`}
+                  >
+                    {reaction}
+                  </button>
+                ))}
+              </div>
+              <div className="chat-compose-row">
+                <input id="chat-input" className="control-input chat-input" type="text" maxLength="160" placeholder="Send a message to the room" />
+                <button id="chat-send-btn" className="primary-btn chat-send-btn" type="button">Send</button>
+              </div>
             </div>
           </aside>
 
@@ -117,3 +146,4 @@ function App() {
 }
 
 export default App;
+
