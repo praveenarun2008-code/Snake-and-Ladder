@@ -1,6 +1,8 @@
 import React, { useEffect } from "react";
 
 function App() {
+  const playerIds = [1, 2, 3, 4];
+
   useEffect(() => {
     import("../script.js");
   }, []);
@@ -15,14 +17,12 @@ function App() {
             <p className="brand-sub">Race to 100, climb the ladders, dodge the snakes.</p>
           </div>
           <div className="score-strip">
-            <div className="score-card">
-              <span id="p1-label" className="label">Player 1</span>
-              <span className="value" id="p1-score">01</span>
-            </div>
-            <div className="score-card">
-              <span id="p2-label" className="label">Player 2</span>
-              <span className="value" id="p2-score">01</span>
-            </div>
+            {playerIds.map(playerId => (
+              <div key={playerId} className="score-card" data-score-card={playerId}>
+                <span id={`p${playerId}-label`} className="label">{`Player ${playerId}`}</span>
+                <span className="value" id={`p${playerId}-score`}>01</span>
+              </div>
+            ))}
           </div>
         </header>
 
@@ -30,7 +30,13 @@ function App() {
           <aside className="side-panel side-panel-left">
             <div className="online-panel">
               <div className="panel-title">Online Multiplayer</div>
-              <p id="multiplayer-status" className="meta-line">Local mode. Play on one device or connect a friend online.</p>
+              <p id="multiplayer-status" className="meta-line">Local mode. Play on one device or connect friends online.</p>
+              <label className="field-label" htmlFor="local-player-count">Local players</label>
+              <select id="local-player-count" className="control-input" defaultValue="2">
+                <option value="2">2 Players</option>
+                <option value="3">3 Players</option>
+                <option value="4">4 Players</option>
+              </select>
               <label className="field-label" htmlFor="player-name">Your name</label>
               <input id="player-name" className="control-input" type="text" maxLength="18" placeholder="Enter your name" />
               <div className="online-actions">
@@ -64,29 +70,27 @@ function App() {
               </div>
               <p id="dice" className="meta-line">Dice: -</p>
               <p id="dice-owner" className="meta-line meta-strong">Active: Player 1</p>
+              <button id="roll-btn" className="primary-btn shared-roll-btn" type="button">Roll for Player 1</button>
             </div>
 
             <div className="controls">
-              <div id="player-roll-1" className="player-roll-group player-roll-1 active">
-                <div className="player-roll-head">
-                  <span id="player-roll-name-1" className="player-roll-name">Player 1</span>
-                  <span id="turn-state-1" className="turn-state">Your turn</span>
-                </div>
-                <button id="roll-btn-1" className="primary-btn player-btn player-1-btn" type="button">Roll for Player 1</button>
-                <p id="p1-last-roll" className="meta-line">Last roll: -</p>
+              <div className="panel-title">Players</div>
+              <div className="player-roll-list">
+                {playerIds.map((playerId, index) => (
+                  <div
+                    key={playerId}
+                    id={`player-roll-${playerId}`}
+                    className={`player-roll-group player-roll-${playerId}${index === 0 ? " active" : ""}`}
+                    data-player-card={playerId}
+                  >
+                    <span className="player-roll-arrow" aria-hidden="true"></span>
+                    <span id={`player-roll-name-${playerId}`} className="player-roll-name">{`Player ${playerId}`}</span>
+                    <span id={`turn-state-${playerId}`} className="turn-state visually-hidden">{index === 0 ? "Your turn" : "Waiting"}</span>
+                    <span id={`p${playerId}-last-roll`} className="player-roll-value visually-hidden">-</span>
+                  </div>
+                ))}
+                <div id="turn-chip" className="turn-chip">Player 1 starts. First to 100 wins.</div>
               </div>
-
-              <div id="player-roll-2" className="player-roll-group player-roll-2">
-                <div className="player-roll-head">
-                  <span id="player-roll-name-2" className="player-roll-name">Player 2</span>
-                  <span id="turn-state-2" className="turn-state">Waiting</span>
-                </div>
-                <button id="roll-btn-2" className="primary-btn player-btn player-2-btn" type="button">Roll for Player 2</button>
-                <p id="p2-last-roll" className="meta-line">Last roll: -</p>
-              </div>
-
-              <p id="position" className="meta-line">Player Position: 1</p>
-              <div id="turn-chip" className="turn-chip">Player 1 starts. First to 100 wins.</div>
             </div>
           </aside>
         </div>

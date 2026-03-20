@@ -20,30 +20,20 @@ const createRoomButton = document.getElementById("create-room-btn");
 const joinRoomButton = document.getElementById("join-room-btn");
 const leaveRoomButton = document.getElementById("leave-room-btn");
 const localModeButton = document.getElementById("local-mode-btn");
-const rollButtons = {
-  1: document.getElementById("roll-btn-1"),
-  2: document.getElementById("roll-btn-2")
-};
-const turnStates = {
-  1: document.getElementById("turn-state-1"),
-  2: document.getElementById("turn-state-2")
-};
-const lastRollLabels = {
-  1: document.getElementById("p1-last-roll"),
-  2: document.getElementById("p2-last-roll")
-};
-const playerRollCards = {
-  1: document.getElementById("player-roll-1"),
-  2: document.getElementById("player-roll-2")
-};
-const playerNameLabels = {
-  1: document.getElementById("p1-label"),
-  2: document.getElementById("p2-label")
-};
-const playerRollNames = {
-  1: document.getElementById("player-roll-name-1"),
-  2: document.getElementById("player-roll-name-2")
-};
+const sharedRollButton = document.getElementById("roll-btn");
+const localPlayerCountSelect = document.getElementById("local-player-count");
+const PLAYER_IDS = [1, 2, 3, 4];
+const MAX_ONLINE_PLAYERS = PLAYER_IDS.length;
+const MIN_ONLINE_PLAYERS = 2;
+const MIN_LOCAL_PLAYERS = 2;
+const MAX_LOCAL_PLAYERS = PLAYER_IDS.length;
+let localPlayerCount = MIN_LOCAL_PLAYERS;
+const scoreCards = Object.fromEntries(PLAYER_IDS.map(playerId => [playerId, document.querySelector(`[data-score-card="${playerId}"]`)]));
+const turnStates = Object.fromEntries(PLAYER_IDS.map(playerId => [playerId, document.getElementById(`turn-state-${playerId}`)]));
+const lastRollLabels = Object.fromEntries(PLAYER_IDS.map(playerId => [playerId, document.getElementById(`p${playerId}-last-roll`)]));
+const playerRollCards = Object.fromEntries(PLAYER_IDS.map(playerId => [playerId, document.getElementById(`player-roll-${playerId}`)]));
+const playerNameLabels = Object.fromEntries(PLAYER_IDS.map(playerId => [playerId, document.getElementById(`p${playerId}-label`)]));
+const playerRollNames = Object.fromEntries(PLAYER_IDS.map(playerId => [playerId, document.getElementById(`player-roll-name-${playerId}`)]));
 let moveIndicator = null;
 let moveIndicatorTimerId = null;
 
@@ -318,6 +308,7 @@ const multiplayerState = {
   peerSupported: typeof Peer !== "undefined",
   peer: null,
   connection: null,
+  connections: {},
   roomCode: "",
   localPlayerSlot: null,
   clientId: getClientId(),
@@ -379,10 +370,80 @@ function isPeerActive(peer){
   return Boolean(peer && peer.open && !peer.destroyed && !peer.disconnected);
 }
 
+function createPlayerSlotMap(factory){
+  const next = {};
+  PLAYER_IDS.forEach(playerId => {
+    next[playerId] = typeof factory === "function" ? factory(playerId) : factory;
+  });
+  return next;
+}
+
+function getConnectedPlayerIds(players = getOnlinePlayers()){
+  return PLAYER_IDS.filter(playerId => players[playerId]);
+}
+
+function getLocalPlayerIds(){
+  return PLAYER_IDS.slice(0, localPlayerCount);
+}
+
+function getVisiblePlayerIds(players = getOnlinePlayers()){
+  if(isOnlineMode()){
+    const connectedPlayerIds = getConnectedPlayerIds(players);
+    return connectedPlayerIds.length ? connectedPlayerIds : [1];
+  }
+  return getLocalPlayerIds();
+}
+
+function setPanelVisibility(element, visible){
+  if(!element){
+    return;
+  }
+  element.hidden = !visible;
+  element.style.display = visible ? "" : "none";
+}
+
+function getNextLocalPlayer(currentId){
+  const localPlayerIds = getLocalPlayerIds();
+  const currentIndex = localPlayerIds.indexOf(currentId);
+  if(currentIndex === -1){
+    return localPlayerIds[0] || 1;
+  }
+  return localPlayerIds[(currentIndex + 1) % localPlayerIds.length];
+}
+
+function getFirstActivePlayerId(players = getOnlinePlayers()){
+  const activePlayerIds = getConnectedPlayerIds(players);
+  return activePlayerIds[0] || 1;
+}
+
+function getNextActivePlayer(currentId, players = getOnlinePlayers()){
+  const activePlayerIds = getConnectedPlayerIds(players);
+  if(!activePlayerIds.length){
+    return 1;
+  }
+  const currentIndex = activePlayerIds.indexOf(currentId);
+  if(currentIndex === -1){
+    return activePlayerIds[0];
+  }
+  return activePlayerIds[(currentIndex + 1) % activePlayerIds.length];
+}
+
+function getFirstOpenGuestSlot(players = getOnlinePlayers()){
+  return PLAYER_IDS.slice(1).find(playerId => !players[playerId]) || null;
+}
+
+function isRoomFull(players = getOnlinePlayers()){
+  return getConnectedPlayerIds(players).length >= MAX_ONLINE_PLAYERS;
+}
+
+function getOpenHostConnections(){
+  return Object.values(multiplayerState.connections || {}).filter(connection => connection && connection.open);
+}
+
 function createBaseGameState(){
   return {
-    positions: {1: 1, 2: 1},
-    lastRolls: {1: null, 2: null},
+    positions: createPlayerSlotMap(() => 1),
+    lastRolls: createPlayerSlotMap(() => null),
     currentPlayer: 1,
     gameOver: false,
     diceValue: 1,
@@ -401,7 +462,14 @@ function isOnlineMode(){
 
 function isRoomReady(){
   const players = getOnlinePlayers();
-  return Boolean(players[1] && players[2] && multiplayerState.connection && multiplayerState.connection.open);
+  const activeCount = getConnectedPlayerIds(players).length;
+  if(activeCount < MIN_ONLINE_PLAYERS){
+    return false;
+  }
+  if(multiplayerState.isHost){
+    return Boolean(multiplayerState.peer && multiplayerState.peer.open);
+  }
+  return Boolean(multiplayerState.connection && multiplayerState.connection.open);
 }
 
 function getPlayerDisplayName(playerId){
@@ -411,7 +479,7 @@ function getPlayerDisplayName(playerId){
 }
 
 function updatePlayerNames(){
-  [1, 2].forEach(playerId => {
+  PLAYER_IDS.forEach(playerId => {
     const name = getPlayerDisplayName(playerId);
     if(playerNameLabels[playerId]){
       playerNameLabels[playerId].innerText = name;
@@ -450,6 +518,9 @@ function updateMultiplayerUI(){
   if(localModeButton){
     localModeButton.disabled = busy || (!online && !inRoom);
   }
+  if(localPlayerCountSelect){
+    localPlayerCountSelect.disabled = online || busy;
+  }
 
   if(multiplayerState.pendingAction === "create"){
     setMultiplayerStatus("Creating room...");
@@ -464,12 +535,12 @@ function updateMultiplayerUI(){
   }else if(!multiplayerState.peerSupported){
     setMultiplayerStatus("Online mode needs the PeerJS script to load. Local mode still works.");
   }else if(!online){
-    setMultiplayerStatus("Local mode. Create a room, share the code, and keep the host tab open.");
+    setMultiplayerStatus(`Local mode. Choose ${MIN_LOCAL_PLAYERS} to ${MAX_LOCAL_PLAYERS} players, or create a room for online play.`);
   }else if(!roomReady){
-    setMultiplayerStatus(`Room ${multiplayerState.roomCode} is open. Share the code and wait for your friend.`);
+    setMultiplayerStatus(`Room ${multiplayerState.roomCode} is open. Share the code and wait for players to join.`);
   }else{
     const you = multiplayerState.localPlayerSlot ? getPlayerDisplayName(multiplayerState.localPlayerSlot) : "You";
-    setMultiplayerStatus(`${you} are connected. Both players can play from different places.`);
+    setMultiplayerStatus(`${you} are connected. Up to 4 players can play from different places.`);
   }
 
   updatePlayerNames();
@@ -492,32 +563,45 @@ function getPeerErrorMessage(error){
 }
 
 function clonePlayers(players = {}){
-  return {
-    1: players[1] ? {...players[1]} : null,
-    2: players[2] ? {...players[2]} : null
-  };
+  return createPlayerSlotMap(playerId => players[playerId] ? {...players[playerId]} : null);
 }
 
 function getDefaultOnlinePlayers(){
-  return {
-    1: null,
-    2: null
-  };
+  return createPlayerSlotMap(() => null);
 }
 
 function getCurrentGameState(){
+  const latestRoll = PLAYER_IDS.reduce((value, playerId) => {
+    const nextValue = lastRolls[playerId];
+    return typeof nextValue === "number" ? nextValue : value;
+  }, 1);
+
   return {
-    positions: {1: positions[1], 2: positions[2]},
-    lastRolls: {1: lastRolls[1], 2: lastRolls[2]},
+    positions: createPlayerSlotMap(playerId => positions[playerId]),
+    lastRolls: createPlayerSlotMap(playerId => lastRolls[playerId]),
     currentPlayer,
     gameOver,
-    diceValue: lastRolls[1] || lastRolls[2] || 1,
+    diceValue: latestRoll || 1,
     action: null,
     updatedAt: Date.now()
   };
 }
 
-function sendPeerMessage(message){
+function sendPeerMessage(message, targetConnection = null){
+  if(targetConnection){
+    if(targetConnection.open){
+      targetConnection.send(message);
+    }
+    return;
+  }
+
+  if(multiplayerState.isHost){
+    getOpenHostConnections().forEach(connection => {
+      connection.send(message);
+    });
+    return;
+  }
+
   if(multiplayerState.connection && multiplayerState.connection.open){
     multiplayerState.connection.send(message);
   }
@@ -531,14 +615,25 @@ function broadcastGameState(game){
   });
 }
 
+function clearConnectionObject(connection){
+  if(!connection){
+    return;
+  }
+  connection.off("data");
+  connection.off("open");
+  connection.off("close");
+  connection.off("error");
+}
+
 function clearPeerObjects(){
   if(multiplayerState.connection){
-    multiplayerState.connection.off("data");
-    multiplayerState.connection.off("open");
-    multiplayerState.connection.off("close");
-    multiplayerState.connection.off("error");
+    clearConnectionObject(multiplayerState.connection);
     multiplayerState.connection = null;
   }
+  Object.values(multiplayerState.connections || {}).forEach(connection => {
+    clearConnectionObject(connection);
+  });
+  multiplayerState.connections = {};
   if(multiplayerState.peer){
     multiplayerState.peer.off("open");
     multiplayerState.peer.off("connection");
@@ -713,9 +808,17 @@ async function getPreparedHostPeer(){
 
 function closePeerSession(notifyRemote = false){
   multiplayerState.reconnectingToServer = false;
-  if(notifyRemote && multiplayerState.connection && multiplayerState.connection.open){
-    sendPeerMessage({type: multiplayerState.isHost ? "host-left" : "guest-left"});
+  if(notifyRemote){
+    if(multiplayerState.isHost){
+      sendPeerMessage({type: "host-left"});
+    }else if(multiplayerState.connection && multiplayerState.connection.open){
+      sendPeerMessage({type: "guest-left", playerId: multiplayerState.localPlayerSlot});
+    }
   }
+
+  Object.values(multiplayerState.connections || {}).forEach(connection => {
+    connection.close();
+  });
   if(multiplayerState.connection){
     multiplayerState.connection.close();
   }
@@ -732,6 +835,8 @@ function resetOnlineState(){
   multiplayerState.isHost = false;
   multiplayerState.reconnectingToServer = false;
   multiplayerState.pendingAction = "";
+  multiplayerState.connection = null;
+  multiplayerState.connections = {};
   multiplayerState.players = getDefaultOnlinePlayers();
 }
 
@@ -739,15 +844,9 @@ function applyOnlineGameState(game){
   if(!game){
     return;
   }
-  positions = {
-    1: Number(game.positions && game.positions[1]) || 1,
-    2: Number(game.positions && game.positions[2]) || 1
-  };
-  lastRolls = {
-    1: game.lastRolls && typeof game.lastRolls[1] === "number" ? game.lastRolls[1] : null,
-    2: game.lastRolls && typeof game.lastRolls[2] === "number" ? game.lastRolls[2] : null
-  };
-  currentPlayer = Number(game.currentPlayer) || 1;
+  positions = createPlayerSlotMap(playerId => Number(game.positions && game.positions[playerId]) || 1);
+  lastRolls = createPlayerSlotMap(playerId => game.lastRolls && typeof game.lastRolls[playerId] === "number" ? game.lastRolls[playerId] : null);
+  currentPlayer = Number(game.currentPlayer) || getFirstActivePlayerId();
   gameOver = Boolean(game.gameOver);
   isRolling = false;
   if(!gameOver){
@@ -811,10 +910,7 @@ async function animateOnlineGameState(game){
   diceFace.classList.remove("rolling");
   setDiceFace(diceValue);
   playSound("land");
-  lastRolls = {
-    1: game.lastRolls && typeof game.lastRolls[1] === "number" ? game.lastRolls[1] : lastRolls[1],
-    2: game.lastRolls && typeof game.lastRolls[2] === "number" ? game.lastRolls[2] : lastRolls[2]
-  };
+  lastRolls = createPlayerSlotMap(playerId => game.lastRolls && typeof game.lastRolls[playerId] === "number" ? game.lastRolls[playerId] : lastRolls[playerId]);
   if(diceText){
     diceText.innerText = `${actorName}: ${diceValue}`;
   }
@@ -842,17 +938,40 @@ async function animateOnlineGameState(game){
   updateMultiplayerUI();
 }
 
-function handleHostConnectionClose(showMessage = true){
-  multiplayerState.connection = null;
-  multiplayerState.players[2] = null;
-  multiplayerState.lastActionId = null;
-  hideMoveIndicator();
-  if(isOnlineMode()){
-    applyOnlineGameState(createBaseGameState());
+function handleHostConnectionClose(connection = null, showMessage = true){
+  const playerId = connection && connection.__playerSlot ? connection.__playerSlot : null;
+  if(playerId && multiplayerState.connections[playerId] === connection){
+    delete multiplayerState.connections[playerId];
   }
-  if(showMessage){
-    showToast("Your friend disconnected. Waiting for a new join.", "warn");
+
+  if(playerId && multiplayerState.players[playerId]){
+    const departingName = getPlayerDisplayName(playerId);
+    multiplayerState.players[playerId] = null;
+    multiplayerState.lastActionId = null;
+    hideMoveIndicator();
+
+    if(currentPlayer === playerId){
+      currentPlayer = getNextActivePlayer(playerId);
+    }
+
+    applyOnlineGameState({
+      ...getCurrentGameState(),
+      currentPlayer: getFirstActivePlayerId()
+    });
+
+    if(getConnectedPlayerIds().length >= MIN_ONLINE_PLAYERS){
+      const snapshot = getCurrentGameState();
+      snapshot.currentPlayer = multiplayerState.players[currentPlayer] ? currentPlayer : getFirstActivePlayerId();
+      broadcastGameState(snapshot);
+    }
+
+    if(showMessage){
+      showToast(`${departingName} disconnected. Waiting for another player to join.`, "warn");
+    }
+  }else if(showMessage){
+    showToast("A player disconnected. Waiting for another player to join.", "warn");
   }
+
   updateMultiplayerUI();
 }
 
@@ -869,44 +988,59 @@ function handleGuestConnectionClose(showMessage = true){
   }
 }
 
-function handlePeerMessage(message){
+function handlePeerMessage(message, connection = null){
   if(!message || typeof message !== "object"){
     return;
   }
 
   if(message.type === "join-request" && multiplayerState.isHost){
-    if(multiplayerState.players[2]){
-      sendPeerMessage({type: "room-full"});
-      if(multiplayerState.connection){
-        multiplayerState.connection.close();
+    const slot = getFirstOpenGuestSlot();
+    if(!slot){
+      sendPeerMessage({type: "room-full"}, connection);
+      if(connection){
+        connection.close();
       }
       return;
     }
-    multiplayerState.players[2] = {
+
+    multiplayerState.connections[slot] = connection;
+    if(connection){
+      connection.__playerSlot = slot;
+    }
+    multiplayerState.players[slot] = {
       clientId: message.clientId,
-      name: message.name || "Player 2"
+      name: message.name || `Player ${slot}`
     };
     multiplayerState.mode = "online";
+
+    const gameState = getCurrentGameState();
+    gameState.positions[slot] = gameState.positions[slot] || 1;
+    gameState.lastRolls[slot] = gameState.lastRolls[slot] || null;
+    gameState.currentPlayer = multiplayerState.players[gameState.currentPlayer] ? gameState.currentPlayer : getFirstActivePlayerId();
+
     sendPeerMessage({
       type: "join-accepted",
       roomCode: multiplayerState.roomCode,
+      playerId: slot,
       players: clonePlayers(multiplayerState.players),
-      game: createBaseGameState()
-    });
-    applyOnlineGameState(createBaseGameState());
+      game: gameState
+    }, connection);
+
+    broadcastGameState(gameState);
+    applyOnlineGameState(gameState);
     updateMultiplayerUI();
-    showToast(`${getPlayerDisplayName(2)} joined room ${multiplayerState.roomCode}.`, "success");
+    showToast(`${getPlayerDisplayName(slot)} joined room ${multiplayerState.roomCode}.`, "success");
     return;
   }
 
   if(message.type === "join-accepted" && !multiplayerState.isHost){
     multiplayerState.mode = "online";
     multiplayerState.roomCode = message.roomCode;
-    multiplayerState.localPlayerSlot = 2;
+    multiplayerState.localPlayerSlot = Number(message.playerId) || 2;
     multiplayerState.players = clonePlayers(message.players);
     multiplayerState.pendingAction = "";
     animateOnlineGameState(message.game || createBaseGameState());
-    showToast(`Joined room ${multiplayerState.roomCode}. Player 1 rolls first.`, "success");
+    showToast(`Joined room ${multiplayerState.roomCode} as ${getPlayerDisplayName(multiplayerState.localPlayerSlot)}. Player 1 rolls first.`, "success");
     return;
   }
 
@@ -919,8 +1053,15 @@ function handlePeerMessage(message){
   }
 
   if(message.type === "roll-request" && multiplayerState.isHost){
-    if(message.playerId === 2 && currentPlayer === 2 && !gameOver && multiplayerState.players[2]){
-      commitOnlineTurn(2);
+    const requestedPlayerId = Number(message.playerId);
+    if(
+      connection &&
+      connection.__playerSlot === requestedPlayerId &&
+      currentPlayer === requestedPlayerId &&
+      !gameOver &&
+      multiplayerState.players[requestedPlayerId]
+    ){
+      commitOnlineTurn(requestedPlayerId);
     }
     return;
   }
@@ -931,7 +1072,7 @@ function handlePeerMessage(message){
   }
 
   if(message.type === "guest-left" && multiplayerState.isHost){
-    handleHostConnectionClose(false);
+    handleHostConnectionClose(connection, false);
     return;
   }
 
@@ -949,19 +1090,23 @@ function handlePeerMessage(message){
 }
 
 function attachConnectionHandlers(connection){
-  multiplayerState.connection = connection;
+  if(!multiplayerState.isHost){
+    multiplayerState.connection = connection;
+  }
 
-  connection.on("data", handlePeerMessage);
+  connection.on("data", message => {
+    handlePeerMessage(message, connection);
+  });
   connection.on("close", () => {
     if(multiplayerState.isHost){
-      handleHostConnectionClose();
+      handleHostConnectionClose(connection);
     }else{
       handleGuestConnectionClose();
     }
   });
   connection.on("error", () => {
     if(multiplayerState.isHost){
-      handleHostConnectionClose();
+      handleHostConnectionClose(connection);
     }else{
       handleGuestConnectionClose();
     }
@@ -1080,29 +1225,22 @@ async function createOnlineRoom(){
     multiplayerState.roomCode = roomCode;
     multiplayerState.localPlayerSlot = 1;
     multiplayerState.players = {
+      ...getDefaultOnlinePlayers(),
       1: {
         clientId: multiplayerState.clientId,
         name: getPlayerName()
-      },
-      2: null
+      }
     };
 
     attachPeerHandlers(peer);
     peer.on("connection", connection => {
-      if(multiplayerState.connection && multiplayerState.connection.open){
-        connection.on("open", () => {
-          connection.send({type: "room-full"});
-          connection.close();
-        });
-        return;
-      }
       attachConnectionHandlers(connection);
     });
 
     applyOnlineGameState(createBaseGameState());
     multiplayerState.pendingAction = "";
     updateMultiplayerUI();
-    showToast(`Room ${roomCode} created. Share the code with your friend.`, "success");
+    showToast(`Room ${roomCode} created. Share the code with up to 3 friends.`, "success");
   }catch(error){
     multiplayerState.pendingAction = "";
     showToast(getPeerErrorMessage(error), "warn");
@@ -1138,13 +1276,7 @@ async function joinOnlineRoom(){
     multiplayerState.roomCode = roomCode;
     multiplayerState.mode = "online";
     multiplayerState.isHost = false;
-    multiplayerState.players = {
-      1: null,
-      2: {
-        clientId: multiplayerState.clientId,
-        name: getPlayerName()
-      }
-    };
+    multiplayerState.players = getDefaultOnlinePlayers();
 
     attachPeerHandlers(peer);
     const connection = peer.connect(roomCode, {reliable: true});
@@ -1185,6 +1317,30 @@ function setLocalMode(skipToast = false){
   }
 }
 
+function updateLocalPlayerCountTheme(){
+  if(!localPlayerCountSelect){
+    return;
+  }
+  localPlayerCountSelect.dataset.playerCount = String(localPlayerCount);
+}
+
+function setLocalPlayerCount(value){
+  const parsedValue = Number(value);
+  const nextPlayerCount = Number.isFinite(parsedValue)
+    ? Math.min(MAX_LOCAL_PLAYERS, Math.max(MIN_LOCAL_PLAYERS, parsedValue))
+    : MIN_LOCAL_PLAYERS;
+
+  localPlayerCount = nextPlayerCount;
+  if(localPlayerCountSelect){
+    localPlayerCountSelect.value = String(nextPlayerCount);
+  }
+  updateLocalPlayerCountTheme();
+
+  if(!isOnlineMode()){
+    resetGame();
+  }
+}
+
 function canPlayerAct(playerId){
   if(gameOver){
     if(isOnlineMode()){
@@ -1206,7 +1362,7 @@ function canPlayerAct(playerId){
 
 function buildResolvedTurn(playerId){
   if(!isRoomReady()){
-    showToast("Wait for your friend to join the room.", "info");
+    showToast("Wait for at least 2 players to join the room.", "info");
     return null;
   }
   const dice = Math.floor(Math.random() * 6) + 1;
@@ -1221,16 +1377,10 @@ function buildResolvedTurn(playerId){
     finalPos = ladderMap[end];
     effect = "ladder";
   }
-  const nextPlayer = finalPos === 100 ? playerId : (playerId === 1 ? 2 : 1);
+  const nextPlayer = finalPos === 100 ? playerId : getNextActivePlayer(playerId);
   const nextGameState = {
-    positions: {
-      1: playerId === 1 ? finalPos : positions[1],
-      2: playerId === 2 ? finalPos : positions[2]
-    },
-    lastRolls: {
-      1: playerId === 1 ? dice : lastRolls[1],
-      2: playerId === 2 ? dice : lastRolls[2]
-    },
+    positions: createPlayerSlotMap(slot => slot === playerId ? finalPos : positions[slot]),
+    lastRolls: createPlayerSlotMap(slot => slot === playerId ? dice : lastRolls[slot]),
     currentPlayer: nextPlayer,
     gameOver: finalPos === 100,
     diceValue: dice,
@@ -1291,16 +1441,8 @@ function maybeShowOnlineActionToast(game){
     return;
   }
   multiplayerState.lastActionId = game.action.actionId;
-  const actorName = getPlayerDisplayName(game.action.playerId);
-  const stepCount = Math.abs((Number(game.action.end) || 0) - (Number(game.action.start) || 0));
-  if(game.action.effect === "snake"){
-    showToast(`${actorName} rolled ${game.action.dice} and moved ${stepCount} steps. Snake bite!`, "warn");
-  }else if(game.action.effect === "ladder"){
-    showToast(`${actorName} rolled ${game.action.dice} and moved ${stepCount} steps. Ladder up!`, "success");
-  }else{
-    showToast(`${actorName} rolled ${game.action.dice} and moved ${stepCount} steps.`, "info");
-  }
   if(game.action.finalPos === 100){
+    showToast(`${getPlayerDisplayName(game.action.playerId)} wins!`, "win");
     playSound("win");
     showWinCelebration(game.action.playerId);
   }
@@ -1309,6 +1451,13 @@ function maybeShowOnlineActionToast(game){
 function initMultiplayerControls(){
   if(playerNameInput){
     playerNameInput.value = "Player";
+  }
+  if(localPlayerCountSelect){
+    localPlayerCountSelect.value = String(localPlayerCount);
+    updateLocalPlayerCountTheme();
+    localPlayerCountSelect.addEventListener("change", () => {
+      setLocalPlayerCount(localPlayerCountSelect.value);
+    });
   }
   if(roomCodeInput){
     roomCodeInput.addEventListener("input", () => {
@@ -1360,8 +1509,8 @@ const snakePaths = new Map();
 const ladderPaths = new Map();
 
 let currentPlayer = 1;
-let positions = {1:1, 2:1};
-let lastRolls = {1:null, 2:null};
+let positions = createPlayerSlotMap(() => 1);
+let lastRolls = createPlayerSlotMap(() => null);
 let isRolling = false;
 let gameOver = false;
 const MOVE_DELAY = 420;
@@ -1387,102 +1536,83 @@ function setDiceTheme(playerId){
 }
 
 function ensureMoveIndicator(){
-  if(moveIndicator || !boardWrap || typeof document === "undefined"){
-    return moveIndicator;
-  }
-
-  moveIndicator = document.createElement("div");
-  moveIndicator.id = "move-indicator";
-  moveIndicator.className = "move-indicator";
-  boardWrap.appendChild(moveIndicator);
-  return moveIndicator;
+  return null;
 }
 
-function showMoveIndicator(message){
-  const indicator = ensureMoveIndicator();
-  if(!indicator){
-    return;
-  }
+function showMoveIndicator(){
+}
 
+function hideMoveIndicator(){
   if(moveIndicatorTimerId){
     clearTimeout(moveIndicatorTimerId);
     moveIndicatorTimerId = null;
-  }
-
-  indicator.textContent = message;
-  indicator.classList.add("active");
-}
-
-function hideMoveIndicator(delay = 0){
-  const indicator = ensureMoveIndicator();
-  if(!indicator){
-    return;
-  }
-
-  if(moveIndicatorTimerId){
-    clearTimeout(moveIndicatorTimerId);
-    moveIndicatorTimerId = null;
-  }
-
-  const hide = () => {
-    indicator.classList.remove("active");
-  };
-
-  if(delay > 0){
-    moveIndicatorTimerId = setTimeout(hide, delay);
-  }else{
-    hide();
   }
 }
 
 function updateTurnUI(){
-  Object.keys(rollButtons).forEach(key => {
-    const playerId = Number(key);
-    const button = rollButtons[playerId];
+  const visiblePlayerIds = getVisiblePlayerIds();
+  const visiblePlayerSet = new Set(visiblePlayerIds);
+
+  PLAYER_IDS.forEach(playerId => {
     const state = turnStates[playerId];
     const card = playerRollCards[playerId];
+    const isVisible = visiblePlayerSet.has(playerId);
     const isActiveTurn = currentPlayer === playerId;
     const isWinner = gameOver && currentPlayer === playerId;
-    const canAct = canPlayerAct(playerId);
-    const localOnlyOnlineControl = isOnlineMode() && multiplayerState.localPlayerSlot;
-    const isLocalPlayerCard = !localOnlyOnlineControl || multiplayerState.localPlayerSlot === playerId;
+    const isLocalPlayer = multiplayerState.localPlayerSlot === playerId;
 
-    if(button){
-      button.hidden = localOnlyOnlineControl && !isLocalPlayerCard;
-      button.disabled = !canAct;
-      if(gameOver && isOnlineMode()){
-        button.textContent = multiplayerState.localPlayerSlot === 1 ? "Start Online Game" : "Waiting for Host";
-      }else if(gameOver){
-        button.textContent = "Start New Game";
-      }else if(isRolling && isActiveTurn){
-        button.textContent = `Rolling for ${getPlayerDisplayName(playerId)}...`;
-      }else if(isOnlineMode() && multiplayerState.localPlayerSlot === playerId && !isActiveTurn){
-        button.textContent = "Wait for Your Turn";
-      }else{
-        button.textContent = `Roll for ${getPlayerDisplayName(playerId)}`;
-      }
+    if(card){
+      card.hidden = !isVisible;
+      card.classList.toggle("active", isVisible && (isActiveTurn || isWinner));
+      card.classList.toggle("rolling-turn", isVisible && isActiveTurn && isRolling);
     }
 
     if(state){
-      if(gameOver){
-        state.textContent = isWinner ? "Winner" : "Finished";
-      }else if(isOnlineMode() && localOnlyOnlineControl && !isLocalPlayerCard){
-        state.textContent = isActiveTurn ? "Opponent turn" : "Opponent";
+      if(!isVisible){
+        state.textContent = "";
+      }else if(gameOver){
+        state.textContent = isWinner ? "Winner" : "Ready";
       }else if(isRolling && isActiveTurn){
         state.textContent = "Rolling...";
-      }else if(isOnlineMode() && multiplayerState.localPlayerSlot === playerId){
-        state.textContent = isActiveTurn ? "Your turn" : "Your side";
+      }else if(isOnlineMode() && multiplayerState.localPlayerSlot){
+        if(isLocalPlayer){
+          state.textContent = isActiveTurn ? "Your turn" : "You";
+        }else{
+          state.textContent = isActiveTurn ? "Turn" : "Waiting";
+        }
       }else if(isActiveTurn){
         state.textContent = "Your turn";
       }else{
         state.textContent = "Waiting";
       }
     }
-
-    if(card){
-      card.classList.toggle("active", isActiveTurn || isWinner);
-    }
   });
+
+  if(sharedRollButton){
+    let buttonText = `Roll for ${getPlayerDisplayName(currentPlayer)}`;
+    let buttonDisabled = false;
+
+    if(gameOver && isOnlineMode()){
+      buttonText = multiplayerState.localPlayerSlot === 1 ? "Start Online Game" : "Waiting for Host";
+      buttonDisabled = multiplayerState.localPlayerSlot !== 1;
+    }else if(gameOver){
+      buttonText = "Start New Game";
+    }else if(isRolling){
+      buttonText = `Rolling for ${getPlayerDisplayName(currentPlayer)}...`;
+      buttonDisabled = true;
+    }else if(isOnlineMode() && !isRoomReady()){
+      buttonText = "Waiting for Players";
+      buttonDisabled = true;
+    }else if(isOnlineMode() && multiplayerState.localPlayerSlot && currentPlayer !== multiplayerState.localPlayerSlot){
+      buttonText = `Waiting for ${getPlayerDisplayName(currentPlayer)}`;
+      buttonDisabled = true;
+    }else{
+      buttonDisabled = !canPlayerAct(currentPlayer);
+    }
+
+    sharedRollButton.textContent = buttonText;
+    sharedRollButton.disabled = buttonDisabled;
+  }
 
   if(diceOwner){
     if(gameOver){
@@ -1496,7 +1626,7 @@ function updateTurnUI(){
 
   if(turnChip){
     if(isOnlineMode() && !isRoomReady()){
-      turnChip.innerText = "Waiting for both players to join the online room.";
+      turnChip.innerText = "Waiting for at least 2 players to join the online room.";
     }else if(
       isOnlineMode() &&
       !gameOver &&
@@ -1513,7 +1643,7 @@ function updateTurnUI(){
     }else if(gameOver && isOnlineMode()){
       turnChip.innerText = `${getPlayerDisplayName(currentPlayer)} won. Player 1 can start the next online game.`;
     }else if(gameOver){
-      turnChip.innerText = `${getPlayerDisplayName(currentPlayer)} reached 100. Tap any roll button to start again.`;
+      turnChip.innerText = `${getPlayerDisplayName(currentPlayer)} reached 100. Tap Roll Dice to start again.`;
     }else if(isRolling){
       turnChip.innerText = `${getPlayerDisplayName(currentPlayer)} is rolling the dice.`;
     }else{
@@ -1530,7 +1660,7 @@ function updateLastRolls(){
     const label = lastRollLabels[playerId];
     if(label){
       const value = lastRolls[playerId];
-      label.innerText = value === null ? "Last roll: -" : `Last roll: ${value}`;
+      label.innerText = value === null ? "-" : String(value);
     }
   });
 }
@@ -1549,6 +1679,21 @@ function positionToPoint(pos, cellSize){
   return {
     x: (coords.col + 0.5) * cellSize,
     y: (coords.rowTop + 0.5) * cellSize
+  };
+}
+
+function getTokenOffset(playerId, stackedPlayerIds, cellSize){
+  const index = stackedPlayerIds.indexOf(playerId);
+  const offsets = [
+    {x: -0.18, y: -0.18},
+    {x: 0.18, y: -0.18},
+    {x: -0.18, y: 0.18},
+    {x: 0.18, y: 0.18}
+  ];
+  const offset = offsets[index] || {x: 0, y: 0};
+  return {
+    x: offset.x * cellSize,
+    y: offset.y * cellSize
   };
 }
 
@@ -1574,25 +1719,40 @@ function createBoard(){
 function updatePlayers(){
   playerLayer.innerHTML = "";
   const cellSize = board.clientWidth / 10;
-  Object.keys(positions).forEach(playerId => {
+  const visiblePlayerIds = getVisiblePlayerIds();
+  const visiblePlayerSet = new Set(visiblePlayerIds);
+  const groupedPlayerIds = {};
+
+  PLAYER_IDS.forEach(playerId => {
+    setPanelVisibility(scoreCards[playerId], visiblePlayerSet.has(playerId));
+    setPanelVisibility(playerRollCards[playerId], visiblePlayerSet.has(playerId));
+  });
+
+  visiblePlayerIds.forEach(playerId => {
+    const position = positions[playerId];
+    if(!groupedPlayerIds[position]){
+      groupedPlayerIds[position] = [];
+    }
+    groupedPlayerIds[position].push(playerId);
+  });
+
+  visiblePlayerIds.forEach(playerId => {
     const pt = positionToPoint(positions[playerId], cellSize);
+    const offset = getTokenOffset(playerId, groupedPlayerIds[positions[playerId]] || [playerId], cellSize);
     const token = document.createElement("div");
     token.classList.add("player-token", `player-${playerId}`);
-    token.style.left = `${pt.x}px`;
-    token.style.top = `${pt.y}px`;
+    token.style.left = `${pt.x + offset.x}px`;
+    token.style.top = `${pt.y + offset.y}px`;
     playerLayer.appendChild(token);
   });
 
-  const status = gameOver
-    ? `Game Over | Winner: ${getPlayerDisplayName(currentPlayer)}`
-    : `Turn: ${getPlayerDisplayName(currentPlayer)} | ${getPlayerDisplayName(1)}: ${positions[1]} | ${getPlayerDisplayName(2)}: ${positions[2]}`;
-  document.getElementById("position").innerText = status;
-  const p1Score = document.getElementById("p1-score");
-  const p2Score = document.getElementById("p2-score");
-  if(p1Score && p2Score){
-    p1Score.innerText = String(positions[1]).padStart(2, "0");
-    p2Score.innerText = String(positions[2]).padStart(2, "0");
-  }
+  PLAYER_IDS.forEach(playerId => {
+    const scoreEl = document.getElementById(`p${playerId}-score`);
+    if(scoreEl){
+      scoreEl.innerText = String(positions[playerId]).padStart(2, "0");
+    }
+  });
+
   updatePlayerNames();
   updateLastRolls();
   updateTurnUI();
@@ -1869,9 +2029,9 @@ function showToast(message, type = "info", duration = 5000){
 }
 
 function resetGame(){
-  positions = {1:1,2:1};
-  currentPlayer = 1;
-  lastRolls = {1:null, 2:null};
+  positions = createPlayerSlotMap(() => 1);
+  currentPlayer = getLocalPlayerIds()[0] || 1;
+  lastRolls = createPlayerSlotMap(() => null);
   gameOver = false;
   isRolling = false;
   if(diceText){
@@ -2215,13 +2375,13 @@ async function rollDice(){
     return;
   }
 
-  currentPlayer = currentPlayer === 1 ? 2 : 1;
+  currentPlayer = getNextLocalPlayer(currentPlayer);
   isRolling = false;
   updatePlayers();
   hideMoveIndicator(900);
 }
 
-function rollDiceForPlayer(playerId){
+function handleRollAction(){
   if(gameOver){
     if(isOnlineMode()){
       if(multiplayerState.localPlayerSlot !== 1){
@@ -2238,7 +2398,7 @@ function rollDiceForPlayer(playerId){
     return;
   }
   if(isOnlineMode()){
-    if(!canPlayerAct(playerId)){
+    if(!canPlayerAct(currentPlayer)){
       if(!isRoomReady()){
         showToast("Wait for your friend to join the room.", "info");
       }else if(multiplayerState.localPlayerSlot && currentPlayer !== multiplayerState.localPlayerSlot){
@@ -2248,11 +2408,7 @@ function rollDiceForPlayer(playerId){
       }
       return;
     }
-    pushOnlineTurn(playerId);
-    return;
-  }
-  if(playerId !== currentPlayer){
-    showToast(`It's ${getPlayerDisplayName(currentPlayer)}'s turn.`, "info");
+    pushOnlineTurn(currentPlayer);
     return;
   }
   rollDice();
@@ -2261,18 +2417,11 @@ function rollDiceForPlayer(playerId){
 if(!window.__snakesLadderReactBooted){
   window.__snakesLadderReactBooted = true;
 
-  if(rollButtons[1]){
-    rollButtons[1].addEventListener("click", () => {
-      rollDiceForPlayer(1);
+  if(sharedRollButton){
+    sharedRollButton.addEventListener("click", () => {
+      handleRollAction();
     });
   }
-
-  if(rollButtons[2]){
-    rollButtons[2].addEventListener("click", () => {
-      rollDiceForPlayer(2);
-    });
-  }
-
   createBoard();
   renderOverlay();
   ensureMoveIndicator();
@@ -2286,3 +2435,4 @@ if(!window.__snakesLadderReactBooted){
     updatePlayers();
   });
 }
+
