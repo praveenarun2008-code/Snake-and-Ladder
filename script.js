@@ -38,6 +38,10 @@ const CHAT_MAX_LENGTH = 160;
 const INVITE_AUTO_JOIN_DELAY = 220;
 const INVITE_AUTO_JOIN_MAX_ATTEMPTS = 4;
 const INVITE_AUTO_JOIN_RETRY_DELAY = 900;
+const JOIN_RESPONSE_TIMEOUT = 7000;
+const MANUAL_JOIN_MAX_ATTEMPTS = 2;
+const GUEST_RECOVERY_MAX_ATTEMPTS = 3;
+const GUEST_RECOVERY_RETRY_DELAY = 1200;
 let localPlayerCount = MIN_LOCAL_PLAYERS;
 const scoreCards = Object.fromEntries(PLAYER_IDS.map(playerId => [playerId, document.querySelector(`[data-score-card="${playerId}"]`)]));
 const turnStates = Object.fromEntries(PLAYER_IDS.map(playerId => [playerId, document.getElementById(`turn-state-${playerId}`)]));
@@ -349,6 +353,20 @@ const warmGuestState = {
 const pendingInviteRoomCode = getInviteRoomCode();
 let inviteAutoJoinAttempted = false;
 
+const joinRequestState = {
+  timerId: null,
+  roomCode: "",
+  attempt: 1,
+  isAutoJoin: false
+};
+
+const guestRecoveryState = {
+  timerId: null,
+  roomCode: "",
+  attempts: 0,
+  recovering: false
+};
+
 function getClientId(){
   const storageKey = "snakes-ladders-client-id";
   try{
@@ -555,6 +573,14 @@ function getConnectedPlayerIds(players = getOnlinePlayers()){
   return PLAYER_IDS.filter(playerId => players[playerId]);
 }
 
+function getOnlinePlayerCount(players = getOnlinePlayers()){
+  return getConnectedPlayerIds(players).length;
+}
+
+function getConnectedPlayersLabel(players = getOnlinePlayers()){
+  return `${getOnlinePlayerCount(players)}/${MAX_ONLINE_PLAYERS} players connected`;
+}
+
 function getLocalPlayerIds(){
   return PLAYER_IDS.slice(0, localPlayerCount);
 }
@@ -669,6 +695,135 @@ function setMultiplayerStatus(message){
   }
 }
 
+function clearGuestRecoveryTimer(){
+  if(guestRecoveryState.timerId){
+    clearTimeout(guestRecoveryState.timerId);
+    guestRecoveryState.timerId = null;
+  }
+}
+
+function clearGuestRecoveryState(){
+  clearGuestRecoveryTimer();
+  guestRecoveryState.roomCode = "";
+  guestRecoveryState.attempts = 0;
+  guestRecoveryState.recovering = false;
+}
+
+function clearJoinRequestTimer(){
+  if(joinRequestState.timerId){
+    clearTimeout(joinRequestState.timerId);
+    joinRequestState.timerId = null;
+  }
+  joinRequestState.roomCode = "";
+  joinRequestState.attempt = 1;
+  joinRequestState.isAutoJoin = false;
+}
+
+function getJoinMaxAttempts(isAutoJoin = false){
+  return isAutoJoin ? INVITE_AUTO_JOIN_MAX_ATTEMPTS : MANUAL_JOIN_MAX_ATTEMPTS;
+}
+
+function scheduleJoinRetry(roomCode, attempt, {isAutoJoin = false, isRecoveryJoin = false, delayMs = INVITE_AUTO_JOIN_RETRY_DELAY} = {}){
+  window.setTimeout(() => {
+    joinOnlineRoom({
+      roomCodeOverride: roomCode,
+      isAutoJoin,
+      isRecoveryJoin,
+      attempt
+    });
+  }, delayMs);
+}
+
+function scheduleJoinRequestTimeout(roomCode, {isAutoJoin = false, isRecoveryJoin = false, attempt = 1} = {}){
+  clearJoinRequestTimer();
+  joinRequestState.roomCode = roomCode;
+  joinRequestState.attempt = attempt;
+  joinRequestState.isAutoJoin = isAutoJoin;
+  joinRequestState.timerId = window.setTimeout(() => {
+    if(
+      multiplayerState.pendingAction !== "join" ||
+      sanitizeRoomCode(multiplayerState.roomCode) !== roomCode
+    ){
+      return;
+    }
+
+    clearJoinRequestTimer();
+    const maxAttempts = isRecoveryJoin ? GUEST_RECOVERY_MAX_ATTEMPTS : getJoinMaxAttempts(isAutoJoin);
+    if(attempt < maxAttempts){
+      showToast(`Room ${roomCode} is slow to reply. Retrying...`, "info");
+      if(isRecoveryJoin){
+        multiplayerState.reconnectingToServer = true;
+        multiplayerState.mode = "online";
+        multiplayerState.roomCode = roomCode;
+        updateMultiplayerUI();
+      }else{
+        setLocalMode(true);
+      }
+      setMultiplayerStatus(`Retrying room ${roomCode}... (${attempt + 1}/${maxAttempts})`);
+      scheduleJoinRetry(roomCode, attempt + 1, {
+        isAutoJoin,
+        isRecoveryJoin,
+        delayMs: isRecoveryJoin
+          ? GUEST_RECOVERY_RETRY_DELAY
+          : (isAutoJoin ? INVITE_AUTO_JOIN_RETRY_DELAY : 650)
+      });
+      return;
+    }
+
+    showToast(`Room ${roomCode} took too long to answer. Try again.`, "warn");
+    if(isRecoveryJoin){
+      clearGuestRecoveryState();
+    }
+    setLocalMode(true);
+  }, JOIN_RESPONSE_TIMEOUT);
+}
+
+function scheduleGuestRoomRecovery(roomCode, attempt = 1){
+  clearGuestRecoveryTimer();
+  guestRecoveryState.roomCode = roomCode;
+  guestRecoveryState.attempts = attempt;
+  guestRecoveryState.recovering = true;
+  guestRecoveryState.timerId = window.setTimeout(() => {
+    joinOnlineRoom({
+      roomCodeOverride: roomCode,
+      isRecoveryJoin: true,
+      attempt
+    });
+  }, GUEST_RECOVERY_RETRY_DELAY);
+}
+
+function attemptGuestRoomRecovery(showMessage = true){
+  if(multiplayerState.isHost){
+    handleGuestConnectionClose(showMessage);
+    return;
+  }
+
+  const roomCode = sanitizeRoomCode(multiplayerState.roomCode);
+  if(!roomCode){
+    handleGuestConnectionClose(showMessage);
+    return;
+  }
+
+  if(guestRecoveryState.recovering){
+    return;
+  }
+
+  clearJoinRequestTimer();
+  guestRecoveryState.recovering = true;
+  guestRecoveryState.roomCode = roomCode;
+  guestRecoveryState.attempts = 1;
+  closePeerSession(false);
+  multiplayerState.mode = "online";
+  multiplayerState.isHost = false;
+  multiplayerState.roomCode = roomCode;
+  multiplayerState.reconnectingToServer = true;
+  updateMultiplayerUI();
+  if(showMessage){
+    showToast(`Connection to room ${roomCode} dropped. Rejoining...`, "warn");
+  }
+  scheduleGuestRoomRecovery(roomCode, 1);
+}
+
 function updateMultiplayerUI(){
   const inRoom = Boolean(multiplayerState.roomCode);
   const online = isOnlineMode();
@@ -676,6 +831,7 @@ function updateMultiplayerUI(){
   const busy = Boolean(multiplayerState.pendingAction);
   const canShareRoom = inRoom && !busy;
   const chatEnabled = inRoom && !busy;
+  const activeCount = getOnlinePlayerCount();
   const roomText = inRoom ? `Room: ${multiplayerState.roomCode}` : "Room: -";
 
   if(roomCodeDisplay){
@@ -715,7 +871,11 @@ function updateMultiplayerUI(){
   if(multiplayerState.pendingAction === "create"){
     setMultiplayerStatus("Creating room...");
   }else if(multiplayerState.pendingAction === "join"){
-    setMultiplayerStatus("Joining room...");
+    if(multiplayerState.roomCode){
+      setMultiplayerStatus(`${guestRecoveryState.recovering ? "Rejoining" : "Joining"} room ${multiplayerState.roomCode}... waiting for host reply.`);
+    }else{
+      setMultiplayerStatus("Joining room...");
+    }
   }else if(multiplayerState.reconnectingToServer && multiplayerState.roomCode){
     if(multiplayerState.isHost){
       setMultiplayerStatus(`Reconnecting room ${multiplayerState.roomCode}...`);
@@ -727,10 +887,15 @@ function updateMultiplayerUI(){
   }else if(!online){
     setMultiplayerStatus(`Local mode. Choose ${MIN_LOCAL_PLAYERS} to ${MAX_LOCAL_PLAYERS} players, or create a room for online play.`);
   }else if(!roomReady){
-    setMultiplayerStatus(`Room ${multiplayerState.roomCode} is open. Share the code and wait for players to join.`);
+    const playersNeeded = Math.max(0, MIN_ONLINE_PLAYERS - activeCount);
+    if(playersNeeded > 0){
+      setMultiplayerStatus(`Room ${multiplayerState.roomCode} is open. ${getConnectedPlayersLabel()} and waiting for ${playersNeeded} more player${playersNeeded === 1 ? "" : "s"}.`);
+    }else{
+      setMultiplayerStatus(`Room ${multiplayerState.roomCode} is syncing. ${getConnectedPlayersLabel()}.`);
+    }
   }else{
     const you = multiplayerState.localPlayerSlot ? getPlayerDisplayName(multiplayerState.localPlayerSlot) : "You";
-    setMultiplayerStatus(`${you} are connected. Up to 4 players can play from different places.`);
+    setMultiplayerStatus(`${you} are connected. ${getConnectedPlayersLabel()}.`);
   }
 
   updatePlayerNames();
@@ -1142,6 +1307,7 @@ async function getPreparedGuestPeer(){
 }
 
 function closePeerSession(notifyRemote = false){
+  clearJoinRequestTimer();
   multiplayerState.reconnectingToServer = false;
   if(notifyRemote){
     if(multiplayerState.isHost){
@@ -1164,6 +1330,7 @@ function closePeerSession(notifyRemote = false){
 }
 
 function resetOnlineState(){
+  clearGuestRecoveryState();
   multiplayerState.roomCode = "";
   multiplayerState.localPlayerSlot = null;
   multiplayerState.lastActionId = null;
@@ -1301,8 +1468,9 @@ function handleHostConnectionClose(connection = null, showMessage = true){
       broadcastGameState(snapshot);
     }
 
+    addRoomSystemMessage(`${departingName} left the room.`, {broadcast: true});
     if(showMessage){
-      showToast(`${departingName} disconnected. Waiting for another player to join.`, "warn");
+      showToast(`${departingName} disconnected. ${getConnectedPlayersLabel(multiplayerState.players)}.`, "warn");
     }
   }else if(showMessage){
     showToast("A player disconnected. Waiting for another player to join.", "warn");
@@ -1313,6 +1481,7 @@ function handleHostConnectionClose(connection = null, showMessage = true){
 
 function handleGuestConnectionClose(showMessage = true){
   const wasOnline = isOnlineMode();
+  clearGuestRecoveryState();
   closePeerSession(false);
   multiplayerState.mode = "local";
   resetOnlineState();
@@ -1367,11 +1536,17 @@ function handlePeerMessage(message, connection = null){
     applyOnlineGameState(gameState);
     addRoomSystemMessage(`${getPlayerDisplayName(slot)} joined the room.`, {broadcast: true});
     updateMultiplayerUI();
-    showToast(`${getPlayerDisplayName(slot)} joined room ${multiplayerState.roomCode}.`, "success");
+    const connectedLabel = getConnectedPlayersLabel(multiplayerState.players);
+    showToast(`${getPlayerDisplayName(slot)} joined room ${multiplayerState.roomCode}. ${connectedLabel}.`, "success");
+    if(getOnlinePlayerCount(multiplayerState.players) === MAX_ONLINE_PLAYERS){
+      showToast(`Room full. ${connectedLabel}.`, "success");
+    }
     return;
   }
 
   if(message.type === "join-accepted" && !multiplayerState.isHost){
+    clearJoinRequestTimer();
+    clearGuestRecoveryState();
     multiplayerState.mode = "online";
     multiplayerState.roomCode = message.roomCode;
     multiplayerState.localPlayerSlot = Number(message.playerId) || 2;
@@ -1379,7 +1554,7 @@ function handlePeerMessage(message, connection = null){
     multiplayerState.pendingAction = "";
     setChatMessages(message.chatMessages || []);
     animateOnlineGameState(message.game || createBaseGameState());
-    showToast(`Joined room ${multiplayerState.roomCode} as ${getPlayerDisplayName(multiplayerState.localPlayerSlot)}. Player 1 rolls first.`, "success");
+    showToast(`Joined room ${multiplayerState.roomCode} as ${getPlayerDisplayName(multiplayerState.localPlayerSlot)}. ${getConnectedPlayersLabel(multiplayerState.players)}.`, "success");
     return;
   }
 
@@ -1449,15 +1624,19 @@ function handlePeerMessage(message, connection = null){
   }
 
   if(message.type === "host-left"){
+    clearJoinRequestTimer();
+    clearGuestRecoveryState();
     handleGuestConnectionClose(false);
     showToast("The host left the room.", "warn");
     return;
   }
 
   if(message.type === "room-full"){
+    clearJoinRequestTimer();
+    clearGuestRecoveryState();
     multiplayerState.pendingAction = "";
     handleGuestConnectionClose(false);
-    showToast("That room is already full.", "warn");
+    showToast(`That room is already full (${MAX_ONLINE_PLAYERS}/${MAX_ONLINE_PLAYERS}).`, "warn");
   }
 }
 
@@ -1473,14 +1652,14 @@ function attachConnectionHandlers(connection){
     if(multiplayerState.isHost){
       handleHostConnectionClose(connection);
     }else{
-      handleGuestConnectionClose();
+      attemptGuestRoomRecovery();
     }
   });
   connection.on("error", () => {
     if(multiplayerState.isHost){
       handleHostConnectionClose(connection);
     }else{
-      handleGuestConnectionClose();
+      attemptGuestRoomRecovery();
     }
   });
 }
@@ -1568,6 +1747,8 @@ function attachPeerHandlers(peer){
     showToast(getPeerErrorMessage(error), "warn");
     if(multiplayerState.isHost){
       setLocalMode(true);
+    }else if(multiplayerState.roomCode && !multiplayerState.pendingAction){
+      attemptGuestRoomRecovery(false);
     }else{
       handleGuestConnectionClose(false);
     }
@@ -1622,21 +1803,11 @@ async function createOnlineRoom(){
   }
 }
 
-function scheduleInviteAutoJoinRetry(roomCode, attempt){
-  window.setTimeout(() => {
-    joinOnlineRoom({
-      roomCodeOverride: roomCode,
-      isAutoJoin: true,
-      attempt
-    });
-  }, INVITE_AUTO_JOIN_RETRY_DELAY * attempt);
-}
-
 function shouldRetryInviteJoin(error){
   return Boolean(error && (error.type === "peer-unavailable" || error.type === "network"));
 }
 
-async function joinOnlineRoom({roomCodeOverride = "", isAutoJoin = false, attempt = 1} = {}){
+async function joinOnlineRoom({roomCodeOverride = "", isAutoJoin = false, isRecoveryJoin = false, attempt = 1} = {}){
   if(!multiplayerState.peerSupported){
     showToast("Online mode could not load PeerJS.", "warn");
     return;
@@ -1655,8 +1826,14 @@ async function joinOnlineRoom({roomCodeOverride = "", isAutoJoin = false, attemp
   cancelWarmHostPeer();
   closePeerSession(false);
   resetOnlineState();
+  if(isRecoveryJoin){
+    guestRecoveryState.recovering = true;
+    guestRecoveryState.roomCode = roomCode;
+    guestRecoveryState.attempts = attempt;
+  }
   multiplayerState.pendingAction = "join";
   multiplayerState.roomCode = roomCode;
+  multiplayerState.reconnectingToServer = isRecoveryJoin;
   updateMultiplayerUI();
 
   try{
@@ -1678,16 +1855,30 @@ async function joinOnlineRoom({roomCodeOverride = "", isAutoJoin = false, attemp
         clientId: multiplayerState.clientId,
         name: getPlayerName()
       });
+      scheduleJoinRequestTimeout(roomCode, {isAutoJoin, isRecoveryJoin, attempt});
       updateMultiplayerUI();
     });
   }catch(error){
     multiplayerState.pendingAction = "";
-    if(isAutoJoin && shouldRetryInviteJoin(error) && attempt < INVITE_AUTO_JOIN_MAX_ATTEMPTS){
-      setLocalMode(true);
-      setMultiplayerStatus(`Trying to join room ${roomCode}... (${attempt + 1}/${INVITE_AUTO_JOIN_MAX_ATTEMPTS})`);
-      scheduleInviteAutoJoinRetry(roomCode, attempt + 1);
+    const maxAttempts = isRecoveryJoin ? GUEST_RECOVERY_MAX_ATTEMPTS : getJoinMaxAttempts(isAutoJoin);
+    if(shouldRetryInviteJoin(error) && attempt < maxAttempts){
+      if(isRecoveryJoin){
+        multiplayerState.reconnectingToServer = true;
+        updateMultiplayerUI();
+      }else{
+        setLocalMode(true);
+      }
+      setMultiplayerStatus(`Trying to join room ${roomCode}... (${attempt + 1}/${maxAttempts})`);
+      scheduleJoinRetry(roomCode, attempt + 1, {
+        isAutoJoin,
+        isRecoveryJoin,
+        delayMs: isRecoveryJoin
+          ? GUEST_RECOVERY_RETRY_DELAY
+          : (isAutoJoin ? INVITE_AUTO_JOIN_RETRY_DELAY : 650)
+      });
       return;
     }
+    clearGuestRecoveryState();
     showToast(getPeerErrorMessage(error), "warn");
     setLocalMode(true);
   }
@@ -2984,5 +3175,6 @@ if(!window.__snakesLadderReactBooted){
     updatePlayers();
   });
 }
+
 
 
