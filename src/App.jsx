@@ -49,16 +49,16 @@ function App() {
                 <input id="room-code-input" className="control-input" type="text" maxLength="6" placeholder="Enter code" />
                 <button id="join-room-btn" className="secondary-btn" type="button">Join</button>
               </div>
-              <p id="room-code-display" className="meta-line meta-strong">Room: -</p>
-              <div className="room-share-row">
-                <button id="copy-room-link-btn" className="secondary-btn" type="button" disabled>Copy Link</button>
-                <button id="whatsapp-share-btn" className="secondary-btn whatsapp-btn" type="button" disabled>WhatsApp</button>
-              </div>
-              <button id="leave-room-btn" className="ghost-btn" type="button" disabled>Leave Room</button>
             </div>
 
             <div id="room-chat-panel" className="chat-panel">
               <div className="panel-title">Room Chat</div>
+              <p id="room-code-display" className="meta-line meta-strong">Room: -</p>
+              <div className="room-share-row room-share-row-chat">
+                <button id="copy-room-link-btn" className="secondary-btn" type="button" disabled>Copy Link</button>
+                <button id="whatsapp-share-btn" className="secondary-btn whatsapp-btn" type="button" disabled>WhatsApp</button>
+              </div>
+              <button id="leave-room-btn" className="ghost-btn" type="button" disabled>Leave Room</button>
               <div id="chat-messages" className="chat-messages" aria-live="polite">
                 <p className="chat-empty">Join an online room to chat and react.</p>
               </div>

@@ -93,3 +93,107 @@ function createBaseGameStatus(){
     }
 };
 
+function getPlayerName(){
+    const value = palyerNameInput ? playerNameInput.value.trim() : "";
+    return value ? value.slice(0,10) : "player";
+
+}
+
+function  hasJoinIntent(){
+    return Boolean(pendingInviteRoomCode || sanitizeRoomCode(roomCodeInput ? roomCodeInput. value:""));   
+}
+
+function cloneChatMessage(chatMessage = []){
+    return chatMessage.map(entry =>({...entry}));
+}
+
+function isChatAvalible(){
+    return isOnlineMode() && Boolean(multiplayerState.roomCode);
+}
+
+function createChatEntry({
+    kind = "message",
+    text = "",
+    playerId = null ,
+    name = "",
+    id = getEventId(kind === "reaction " ? "reaction ": "chat "),
+    createdAt = Data.now()
+} = {}){
+    const  normalizedText = string(text || "" ).trim().slice(0, CHAT_MAX_LENGTH);
+    return{
+        id,
+        kind,
+        text :normalizedText,
+        playerId : playerId ? Number(playerId) :null,
+        name :name || (playerId ? getPlayerDisplayName(playerId) : "Room"),
+        createdAt
+    };
+}
+
+function setChatMessages(chatMessage =[]){
+    multiplayerState.chatMessage = cloneChatMessage(chatMessage).slice(-CHAT_MAX_MESSAGE);
+    renderCnatMessage();
+}
+
+function appendChatEntry(entry ,{boardcast = false} = {}){
+    if (!entry || !entry.id){
+        return;
+    }
+    if(multiplayerState.chatMessage.some(message => message.id === entry.id)){
+        return;
+    }
+    multiplayerState.chatMessage = [...multiplayerState.chatmessage,{...entry} ].slice(-CHAT_MAX_MESSAGE);
+    renderchatMessages();
+    if(boardcast){
+        sendPeerMessage({type :"chat=event" ,entry});;
+    }
+}
+
+function getChatEmptyState(){
+    if(!chatMessageEl){
+        return "join an online room to chat and react.";
+
+    }
+    return "Room chat is ready .say hi before the next roll.";
+}
+
+function renderChatMessage(){
+    if(!chatMessageEl){
+        return;
+    }
+
+    chatMEssageEl.innerHTML = "";
+    if(!mulitiplayerState.chatMessages.length){
+        const emptyState = document.createElement("p");
+        emptyState.className ="chat-empty";
+        emptyState.textContent = getChatEmptyState();
+        chatMessageEl.appendChild(emptyState);
+        return;
+    }
+
+    const fragment = document.createDocumentFragement();
+    multiplayerState.chatMessage.forEach(entry =>{
+        const item = document.createElement("article");
+        const isSystem = entry.kind === "system";
+        const isReaction = entry.kind === "reaction";
+        const isSelf = !isSustem && Number(entry.playerId) === Number(multiplayerState.loacalPlayerSlot);
+        item.className =[
+            "chat-item",
+            issystem ? "system" : "player",
+            isReaction ? "reaction" : "message",
+            isSelf ? "self" : ""
+        ].filter(Boolean).join(" ");
+
+        if(isSystem){
+            item.textContent = entry.text;
+            fragement.appendChild(item);
+            return;
+        }
+
+        const meta = document.createElement("div");
+            meta.className = "chat-meta";
+            meta.textContent = isSelf ? "You" : (entry.name || getPlayerDisplayName(entry.playerID));
+
+            const bubble = document.createElement("div");
+    })
+}

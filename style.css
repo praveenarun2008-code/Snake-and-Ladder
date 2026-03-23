@@ -474,6 +474,10 @@ h1{
   gap:10px;
 }
 
+.room-share-row-chat{
+  margin-top:-2px;
+}
+
 .whatsapp-btn{
   border-color:rgba(37,211,102,0.45);
   background:rgba(37,211,102,0.14);
