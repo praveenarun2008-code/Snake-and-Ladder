@@ -22,6 +22,8 @@ const leaveRoomButton = document.getElementById("leave-room-btn");
 const localModeButton = document.getElementById("local-mode-btn");
 const copyRoomLinkButton = document.getElementById("copy-room-link-btn");
 const whatsappShareButton = document.getElementById("whatsapp-share-btn");
+const onlinePanel = document.getElementById("online-panel");
+const roomChatPanel = document.getElementById("room-chat-panel");
 const chatMessagesEl = document.getElementById("chat-messages");
 const chatInput = document.getElementById("chat-input");
 const chatSendButton = document.getElementById("chat-send-btn");
@@ -837,6 +839,8 @@ function updateMultiplayerUI(){
   if(roomCodeDisplay){
     roomCodeDisplay.innerText = roomText;
   }
+  setPanelVisibility(onlinePanel, !inRoom);
+  setPanelVisibility(roomChatPanel, inRoom);
   if(leaveRoomButton){
     leaveRoomButton.disabled = !inRoom || busy;
   }

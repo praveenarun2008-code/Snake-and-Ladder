@@ -29,7 +29,7 @@ function App() {
 
         <div className="board-row">
           <aside className="side-panel side-panel-left">
-            <div className="online-panel">
+            <div id="online-panel" className="online-panel">
               <div className="panel-title">Online Multiplayer</div>
               <p id="multiplayer-status" className="meta-line">Local mode. Play on one device or connect friends online.</p>
               <label className="field-label" htmlFor="local-player-count">Local players</label>
@@ -57,7 +57,7 @@ function App() {
               <button id="leave-room-btn" className="ghost-btn" type="button" disabled>Leave Room</button>
             </div>
 
-            <div className="chat-panel">
+            <div id="room-chat-panel" className="chat-panel">
               <div className="panel-title">Room Chat</div>
               <div id="chat-messages" className="chat-messages" aria-live="polite">
                 <p className="chat-empty">Join an online room to chat and react.</p>
